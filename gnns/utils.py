@@ -6,6 +6,7 @@ import gym
 
 from scipy.sparse import coo_matrix
 
+# for testing
 env = gym.make('BabyAI-GoToRedBall-v0')
 obs, _, _, _ = env.step(env.action_space.sample())
 x = obs['image']
