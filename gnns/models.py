@@ -30,6 +30,8 @@ def scatter_sum(x, batch):
 
 class MLP(torch.nn.Module):
     def __init__(self, layer_sizes):
+        super().__init__()
+
         layers = []
         lin = layer_sizes.pop(0)
 
@@ -68,32 +70,32 @@ class SelfAttentionLayer(torch.nn.Module):
         # for now values have the same dim as keys and queries
         self.Ftot = (2*Fqk + Fv) * nheads
 
-        self.proj = Linear(Fin, self.Ftot)
+        self.proj = Linear(Fin, self.Ftot, bias=False)
 
     def forward(self, x):
-        # x :: [N, Fin]
+        # x :: [B, N, Fin]
         N = x.shape[1]
-        qkv = self.proj(x) # [N, F]
+        qkv = self.proj(x) # [B, N, F]
 
-        # [N, H, F/H]
+        # [B, N, H, F/H]
         qkv = qkv.reshape((-1, N, self.nheads, self.Ftot // self.nheads))
-        qkv = qkv.permute(0, 2, 1, 3) # [H, N, F/H]
+        qkv = qkv.permute(0, 2, 1, 3) # [B, H, N, F/H]
 
         q, k, v = qkv.split([self.Fqk, self.Fqk, self.Fv], -1)
 
-        # [H, N, N]
+        # [B, H, N, N]
         qk = q @ (k.permute(0, 1, 3, 2))
         qk = qk / np.sqrt(self.Fqk)
-        # [H, N, N], what axis ?
+        # [B, H, N, N], what axis ?
         aw = torch.softmax(qk, -1)
 
-        # [H, N, N] x [H, N, F/H] -> [H, N, F/H]
+        # [B, H, N, N] x [B, H, N, F/H] -> [B, H, N, F/H]
         out = (aw @ v)
 
-        # [N, H, F/H]
+        # [B, N, H, F/H]
         out = out.permute(0, 2, 1, 3)
 
-        # [N, F]
+        # [B, N, F]
         out = out.reshape((-1, N, self.nheads * self.Fv))
 
         return out
@@ -117,12 +119,12 @@ class TransformerBlock(torch.nn.Module):
         self.norm1 = torch.nn.LayerNorm([d * h])
         self.norm2 = torch.nn.LayerNorm([d * h])
 
-        self.mhsa = SelfAttentionLayer(d, d, d*h, h)
+        self.mhsa = SelfAttentionLayer(d*h, d, d, h)
         # TODO: check papers for hparams
         self.mlp = MLP([h*d, h*d, h*d])
 
     def forward(self, x):
-        
+
         y = self.mhsa(x)
         y = self.norm1(x + y)
 
@@ -137,19 +139,34 @@ class RMC(torch.nn.Module):
     """
     Relational Memory Core.
     """
-    def __init__(self, N, d, h):
+    modes = ['RNN', 'LSTM']
+
+    def __init__(self, N, d, h, b, mode='RNN'):
         super().__init__()
         
-        # size of the number of slots
-        self.N = N
-        self.d = d
-        self.h = h
+        # TODO: do we need the batch size in advance ?
+        self.N = N # number of slots
+        self.d = d # dimension of a head
+        self.h = h # number of heads
+        self.b = b # batch size
 
         # initialize memory M
-        self.M = torch.zeros([self.N, self.d * self.h])
+        M = torch.zeros([self.b, self.N, self.d * self.h])
+        self.register_buffer('M', M)
+
+        # modules
+        self.self_attention = TransformerBlock(d, h)
 
     def forward(self, x):
-        # TODO: implement forward pass
+        # vanilla recurrent pass
+        # x :: [b, N, f]
+
+        M_cat = torch.cat([self.M, x], 1)
+        M = self.self_attention(M_cat)[:, :self.N]
+
+        self.register_buffer('M', M)
+
+        # TODO: output
 
 ### Basic tests
 
@@ -157,3 +174,6 @@ sal = SelfAttentionLayer(5, 5, 2, 2)
 x = torch.rand(12, 7, 5)
 res = sal(x)
 print(res.shape)
+
+rmc = RMC(5, 13, 3, 7)
+x = torch.rand(7, 5, 13*3)
