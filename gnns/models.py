@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
+
 import babyai
 import gym
 
@@ -7,7 +9,7 @@ from torch.nn import Linear, Sequential, ReLU
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
-### sparse summing op
+#### sparse summing op
 
 def scatter_sum(x, batch):
     # sums in the 0th dim according to the indices provided in batch.
@@ -26,7 +28,7 @@ def scatter_sum(x, batch):
     )
     return sparse.mm(x)
 
-### ReLU MLP
+#### ReLU MLP
 
 class MLP(torch.nn.Module):
     def __init__(self, layer_sizes):
@@ -46,7 +48,7 @@ class MLP(torch.nn.Module):
     def forward(self, x):
         return self.net(x)
 
-### MHSA and Transformer
+#### MHSA and Transformer
 
 # TODO: adapt for variable input size
 # idea: use hybrid sparse-dense tensors provided by torch.sparse
@@ -54,6 +56,9 @@ class MLP(torch.nn.Module):
 class SelfAttentionLayer(torch.nn.Module):
     """
     Multi-head Self-Attention layer.
+
+    TODO: add support for diffrent numbers of objects between queries and
+        keys/values.
 
     Inputs:
         - x: the input data for a minibatch, concatenated in the 0-th dim.
@@ -67,36 +72,37 @@ class SelfAttentionLayer(torch.nn.Module):
         self.Fv = Fv # features for values
         self.nheads = nheads
 
+        assert Fqk // nheads == Fqk / nheads, "self-attention features must "\
+            " be divisible by number of heads"
+        assert Fv // nheads == Fv / nheads, "value features must "\
+            " be divisible by number of heads"
+
         # for now values have the same dim as keys and queries
-        self.Ftot = (2*Fqk + Fv) * nheads
+        self.Ftot = (2*Fqk + Fv)
 
         self.proj = Linear(Fin, self.Ftot, bias=False)
 
     def forward(self, x):
-        # x :: [B, N, Fin]
-        N = x.shape[1]
-        qkv = self.proj(x) # [B, N, F]
+        # alternative formulation of forward pass
 
-        # [B, N, H, F/H]
-        qkv = qkv.reshape((-1, N, self.nheads, self.Ftot // self.nheads))
-        qkv = qkv.permute(0, 2, 1, 3) # [B, H, N, F/H]
+        B, N, _ = x.shape
+        H = self.nheads
+        Fh = self.Fqk // H
+        Fhv = self.Fv // H
 
-        q, k, v = qkv.split([self.Fqk, self.Fqk, self.Fv], -1)
+        scaling = float(Fh) ** -0.5
+        q, k, v = self.proj(x).split([self.Fqk, self.Fqk, self.Fv], dim=-1)
 
-        # [B, H, N, N]
-        qk = q @ (k.permute(0, 1, 3, 2))
-        qk = qk / np.sqrt(self.Fqk)
-        # [B, H, N, N], what axis ?
-        aw = torch.softmax(qk, -1)
+        q = q * scaling
+        q = q.reshape(B, N, H, Fh).transpose(1, 2)
+        k = k.reshape(B, N, H, Fh).transpose(1, 2)
+        v = v.reshape(B, N, H, Fhv).transpose(1, 2)
 
-        # [B, H, N, N] x [B, H, N, F/H] -> [B, H, N, F/H]
+        aw = q @ (k.transpose(2, 3))
+        aw = torch.softmax(aw, dim=-1)
+
         out = (aw @ v)
-
-        # [B, N, H, F/H]
-        out = out.permute(0, 2, 1, 3)
-
-        # [B, N, F]
-        out = out.reshape((-1, N, self.nheads * self.Fv))
+        out = out.transpose(1, 2).reshape(B, N, self.Fv)
 
         return out
 
@@ -133,7 +139,7 @@ class TransformerBlock(torch.nn.Module):
 
         return z
 
-### Full Relational Memory Core
+#### Full Relational Memory Core
 
 class RMC(torch.nn.Module):
     """
@@ -168,12 +174,62 @@ class RMC(torch.nn.Module):
 
         # TODO: output
 
-### Basic tests
+#### Basic tests
 
-sal = SelfAttentionLayer(5, 5, 2, 2)
-x = torch.rand(12, 7, 5)
-res = sal(x)
-print(res.shape)
+# sal = SelfAttentionLayer(10, 10, 10, 2)
+# x = torch.rand(12, 7, 10)
+# res = sal(x)
+# print(res.shape)
 
-rmc = RMC(5, 13, 3, 7)
-x = torch.rand(7, 5, 13*3)
+# rmc = RMC(5, 13, 3, 7)
+# x = torch.rand(7, 5, 13*3)
+
+
+#### Test that our implem for multi-head self-attention gives the same results
+#    as the pytorch one
+
+seed = 0
+Fin = 512
+nheads = 8
+Fv = 512
+Fqk = 512
+
+torch.manual_seed(seed)
+
+sal = SelfAttentionLayer(
+    Fin=Fin,
+    Fqk=Fqk,
+    Fv=Fv,
+    nheads=nheads,
+)
+tsal = torch.nn.MultiheadAttention(
+    embed_dim=Fin,
+    num_heads=nheads,
+    bias=False,
+)
+
+tsal.in_proj_weight = sal.proj.weight
+# set out map to identity
+tsal.out_proj.weight = torch.nn.Parameter(torch.eye(Fv))
+
+X = torch.rand(128, 5, 512)
+Xt = X.transpose(0, 1)
+
+# res = F.multi_head_attention_forward()
+res1 = tsal(Xt, Xt, Xt)[0].transpose(0, 1)
+res2 = sal(X)
+
+resf = F.multi_head_attention_forward(
+    Xt,
+    Xt,
+    Xt,
+    Fin,
+    nheads,
+    sal.proj.weight,
+    None,
+    None,
+    None,
+    False,
+    0.,
+    torch.eye(512),
+    None)[0].transpose(0, 1)
