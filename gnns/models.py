@@ -9,24 +9,79 @@ from torch.nn import Linear, Sequential, ReLU
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
-#### sparse summing op
+#### sparse reduction ops
 
 def scatter_sum(x, batch):
-    # sums in the 0th dim according to the indices provided in batch.
-    # x has to be 2-dimensional.
-    
-    # TODO: generalize this function to arbitrary number of dims with
-    # sparse-dense hybrid tensors and summing over a particular dim.
-    bsize = batch[-1]
+    nbatches = batch[-1] + 1
     nelems = len(batch)
-
-    i = torch.LongTensor(torch.arange(bsize), batch)
-    sparse = torch.sparse.FloatTensor(
+    i = torch.LongTensor(batch, torch.arange(nelems))
+    
+    st = torch.sparse.FloatTensor(
         i,
-        torch.ones(nelems),
-        torch.Size([bsize, nelems]),
+        x, 
+        torch.Size([nbatches, nelems]),
     )
-    return sparse.mm(x)
+    return torch.sparse.sum(st, dim=1).values()
+
+def scatter_mean(x, batch):
+    nbatches = batch[-1] + 1
+    nelems = len(batch)
+    i = torch.LongTensor(batch, torch.arange(nelems))
+    
+    st = torch.sparse.FloatTensor(
+        i,
+        x, 
+        torch.Size([nbatches, nelems]),
+    )
+    ost = torch.sparse.FloatTensor(
+        i,
+        torch.ones(nelems), 
+        torch.Size([nbatches, nelems]),
+    )
+    xsum = torch.sparse.sum(st, dim=1).values()
+    nx = torch.sparse.sum(ost, dim=1).values().view([-1, 1, 1])
+    return xsum / nx
+
+def scatter_softmax(x, batch):
+    """
+    Computes the softmax-reduction of elements of x as given by the batch index
+    tensor.
+    """
+    nbatches = batch[-1] + 1
+    nelems = len(batch)
+    i = torch.LongTensor(batch, torch.arange(nelems))
+    
+    # TODO: patch for numerical stability
+    exp = x.exp()
+    st = torch.sparse.FloatTensor(
+        i,
+        exp,
+        torch.Size([nbatches, nelems]),
+    )
+    expsum = torch.sparse.sum(st, dim=1).values()[batch]
+    return exp / expsum
+
+def scatter_softmax_nums(x, batch):
+    """
+    Computes the softmax-reduction of elements of x as given by the batch index
+    tensor.
+    """
+    nbatches = batch[-1] + 1
+    nelems = len(batch)
+    i = torch.LongTensor(batch, torch.arange(nelems))
+    
+    # TODO: patch for numerical stability
+    exp = x.exp()
+    # sustract largest element for numerical stability of softmax
+    xm = x.max(0)
+    exp -= mx
+    st = torch.sparse.FloatTensor(
+        i,
+        exp,
+        torch.Size([nbatches, nelems]),
+    )
+    expsum = torch.sparse.sum(st, dim=1).values()[batch]
+    return exp / expsum
 
 #### ReLU MLP
 
@@ -101,10 +156,64 @@ class SelfAttentionLayer(torch.nn.Module):
         aw = q @ (k.transpose(2, 3))
         aw = torch.softmax(aw, dim=-1)
 
+        print(f"shape: {aw.shape}")
+
         out = (aw @ v)
+        print(f"shape: {out.shape}")
         out = out.transpose(1, 2).reshape(B, N, self.Fv)
 
         return out
+
+class SelfAttentionLayerSparse(torch.nn.Module):
+    """
+    Sparse version of the above, for accepting batches with different
+    numbers of objects.
+    """
+    def __init__(self, Fin, Fqk, Fv, nheads):
+        super().__init__()
+        self.Fin = Fin # in features
+        self.Fqk = Fqk # features for dot product
+        self.Fv = Fv # features for values
+        self.nheads = nheads
+
+        assert Fqk // nheads == Fqk / nheads, "self-attention features must "\
+            " be divisible by number of heads"
+        assert Fv // nheads == Fv / nheads, "value features must "\
+            " be divisible by number of heads"
+
+        # for now values have the same dim as keys and queries
+        self.Ftot = (2*Fqk + Fv)
+
+        self.proj = Linear(Fin, self.Ftot, bias=False)
+
+    def forward(self, x, batch, ei):
+        # batch is the batch index tensor
+        # TODO: implement for source and target tensors ?
+        # that way we get rid of excess computation
+
+        src, dest = ei
+
+        B = batch[-1] + 1
+        maxbsz = batch.max()
+        H = self.nheads
+        Fh = self.Fqk // H
+        Fhv = self.Fv // H
+
+        scaling = float(Fh) ** -0.5
+        q, k, v = self.proj(x).split([self.Fqk, self.Fqk, self.Fv], dim=-1)
+
+        q = q * scaling
+        q = q.reshape(-1, H, Fh)
+        k = k.reshape(-1, H, Fh)
+        v = v.reshape(-1, H, Fhv)
+
+        qs, ks, vs = q[src], k[dest], v[dest]
+        # dot product
+        aw = qs.view(-1, H, 1, Fh) @ ks.view(-1, H, Fh, 1)
+        aw = aw.squeeze(-1)
+        # softmax reduction
+        eb = batch[src]
+
 
 class TransformerBlock(torch.nn.Module):
     """
