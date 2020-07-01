@@ -14,24 +14,26 @@ env = gym.make('BabyAI-GoToRedBall-v0')
 def scatter_sum(x, batch):
     nbatches = batch[-1] + 1
     nelems = len(batch)
-    i = torch.LongTensor(batch, torch.arange(nelems))
+    fx = x.shape[-1]
+    i = torch.stack([batch, torch.arange(nelems)])
     
     st = torch.sparse.FloatTensor(
         i,
         x, 
-        torch.Size([nbatches, nelems]),
+        torch.Size([nbatches, nelems, fx]),
     )
     return torch.sparse.sum(st, dim=1).values()
 
 def scatter_mean(x, batch):
     nbatches = batch[-1] + 1
     nelems = len(batch)
-    i = torch.LongTensor(batch, torch.arange(nelems))
+    fx = x.shape[-1]
+    i = torch.stack([batch, torch.arange(nelems)])
     
     st = torch.sparse.FloatTensor(
         i,
         x, 
-        torch.Size([nbatches, nelems]),
+        torch.Size([nbatches, nelems, fx]),
     )
     ost = torch.sparse.FloatTensor(
         i,
@@ -39,7 +41,9 @@ def scatter_mean(x, batch):
         torch.Size([nbatches, nelems]),
     )
     xsum = torch.sparse.sum(st, dim=1).values()
-    nx = torch.sparse.sum(ost, dim=1).values().view([-1, 1, 1])
+    print(xsum.shape)
+    nx = torch.sparse.sum(ost, dim=1).values().view([-1, 1])
+    print(nx.shape)
     return xsum / nx
 
 def scatter_softmax(x, batch):
@@ -49,14 +53,15 @@ def scatter_softmax(x, batch):
     """
     nbatches = batch[-1] + 1
     nelems = len(batch)
-    i = torch.LongTensor(batch, torch.arange(nelems))
+    fx = x.shape[-1]
+    i = torch.stack([batch, torch.arange(nelems)])
     
     # TODO: patch for numerical stability
     exp = x.exp()
     st = torch.sparse.FloatTensor(
         i,
         exp,
-        torch.Size([nbatches, nelems]),
+        torch.Size([nbatches, nelems, fx]),
     )
     expsum = torch.sparse.sum(st, dim=1).values()[batch]
     return exp / expsum
@@ -65,20 +70,22 @@ def scatter_softmax_nums(x, batch):
     """
     Computes the softmax-reduction of elements of x as given by the batch index
     tensor.
+
+    TODO: fix this, values on last dim are not independent
     """
     nbatches = batch[-1] + 1
     nelems = len(batch)
-    i = torch.LongTensor(batch, torch.arange(nelems))
+    fx = x.shape[-1]
+    i = torch.stack([batch, torch.arange(nelems)])
     
-    # TODO: patch for numerical stability
     exp = x.exp()
     # sustract largest element for numerical stability of softmax
-    xm = x.max(0)
-    exp -= mx
+    xm = x.max(0).values
+    exp = exp - xm
     st = torch.sparse.FloatTensor(
         i,
         exp,
-        torch.Size([nbatches, nelems]),
+        torch.Size([nbatches, nelems, fx]),
     )
     expsum = torch.sparse.sum(st, dim=1).values()[batch]
     return exp / expsum
@@ -342,3 +349,9 @@ resf = F.multi_head_attention_forward(
     0.,
     torch.eye(512),
     None)[0].transpose(0, 1)
+
+# sparse reduction ops testing 
+
+x = torch.rand(4, 10)
+xd = x.view(2, 2, 10)
+batch = torch.LongTensor([0, 0, 1, 1])
