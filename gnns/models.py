@@ -20,7 +20,7 @@ def scatter_sum(x, batch):
     st = torch.sparse.FloatTensor(
         i,
         x, 
-        torch.Size([nbatches, nelems, fx]),
+        torch.Size([nbatches, nelems] + list(x.shape[1:])),
     )
     return torch.sparse.sum(st, dim=1).values()
 
@@ -33,7 +33,7 @@ def scatter_mean(x, batch):
     st = torch.sparse.FloatTensor(
         i,
         x, 
-        torch.Size([nbatches, nelems, fx]),
+        torch.Size([nbatches, nelems] + list(x.shape[1:])),
     )
     ost = torch.sparse.FloatTensor(
         i,
@@ -61,7 +61,7 @@ def scatter_softmax(x, batch):
     st = torch.sparse.FloatTensor(
         i,
         exp,
-        torch.Size([nbatches, nelems, fx]),
+        torch.Size([nbatches, nelems] + list(x.shape[1:])),
     )
     expsum = torch.sparse.sum(st, dim=1).values()[batch]
     return exp / expsum
@@ -85,7 +85,7 @@ def scatter_softmax_nums(x, batch):
     st = torch.sparse.FloatTensor(
         i,
         exp,
-        torch.Size([nbatches, nelems, fx]),
+        torch.Size([nbatches, nelems] + list(exp.shape[1:])),
     )
     expsum = torch.sparse.sum(st, dim=1).values()[batch]
     return exp / expsum
@@ -161,12 +161,12 @@ class SelfAttentionLayer(torch.nn.Module):
         v = v.reshape(B, N, H, Fhv).transpose(1, 2)
 
         aw = q @ (k.transpose(2, 3))
-        aw = torch.softmax(aw, dim=-1)
+        aw = torch.softmax(aw, dim=-2)
 
-        print(f"shape: {aw.shape}")
+        # print(f"shape: {aw.shape}")
 
         out = (aw @ v)
-        print(f"shape: {out.shape}")
+        # print(f"shape: {out.shape}")
         out = out.transpose(1, 2).reshape(B, N, self.Fv)
 
         return out
@@ -201,7 +201,6 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         src, dest = ei
 
         B = batch[-1] + 1
-        maxbsz = batch.max()
         H = self.nheads
         Fh = self.Fqk // H
         Fhv = self.Fv // H
@@ -215,12 +214,22 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         v = v.reshape(-1, H, Fhv)
 
         qs, ks, vs = q[src], k[dest], v[dest]
+        print(f"qs shape: {qs.shape}")
         # dot product
         aw = qs.view(-1, H, 1, Fh) @ ks.view(-1, H, Fh, 1)
-        aw = aw.squeeze(-1)
+        print(f"aw shape: {aw.shape}")
+        aw = aw.squeeze()
+        print(f"aw shape: {aw.shape}")
+        print(f"src: {src}")
         # softmax reduction
-        eb = batch[src]
+        aw = scatter_softmax(aw, src)
+        print(f"aw shape, after softmax: {aw.shape}")
 
+        out = aw.view([-1, H, 1]) * vs
+        out = scatter_sum(out, src)
+        out = out.reshape([-1, H * Fhv])
+
+        return out
 
 class TransformerBlock(torch.nn.Module):
     """
@@ -237,17 +246,44 @@ class TransformerBlock(torch.nn.Module):
         self.d = d
         self.h = h
 
-        # TODO: is this correct ? Check the paper
-        self.norm1 = torch.nn.LayerNorm([d * h])
-        self.norm2 = torch.nn.LayerNorm([d * h])
+        self.norm1 = torch.nn.LayerNorm([d])
+        self.norm2 = torch.nn.LayerNorm([d])
 
-        self.mhsa = SelfAttentionLayer(d*h, d, d, h)
+        self.mhsa = SelfAttentionLayer(d, d, d, h)
         # TODO: check papers for hparams
-        self.mlp = MLP([h*d, h*d, h*d])
+        self.mlp = MLP([d, d, d])
 
     def forward(self, x):
 
         y = self.mhsa(x)
+        y = self.norm1(x + y)
+
+        z = self.mlp(y)
+        z = self.norm2(y + z)
+
+        return z
+
+class TransformerBlockSparse(torch.nn.Module):
+    """
+    Sparse version of the above, different semantics for the input format.
+    """
+    def __init__(self, d, h):
+        super().__init__()
+
+        self.d = d
+        self.h = h
+
+        # TODO: Do those layers work correctly in the sparse case ?
+        self.norm1 = torch.nn.LayerNorm([d])
+        self.norm2 = torch.nn.LayerNorm([d])
+
+        self.mhsa = SelfAttentionLayerSparse(d, d, d, h)
+        # TODO: check papers for hparams
+        self.mlp = MLP([d, d, d])
+
+    def forward(self, x, batch, ei):
+
+        y = self.mhsa(x, batch, ei)
         y = self.norm1(x + y)
 
         z = self.mlp(y)
@@ -289,6 +325,45 @@ class RMC(torch.nn.Module):
         self.register_buffer('M', M)
 
         # TODO: output
+
+class RMCSparse(torch.nn.Module):
+    """
+    Relational Memory Core, sparse version.
+    """
+    def __init__(self, N, d, h, b, mode='RNN'):
+        super().__init__()
+        
+        # TODO: do we need the batch size in advance ?
+        self.N = N # number of slots
+        self.d = d # dimension of a head
+        self.h = h # number of heads
+        self.b = b # batch size
+
+        # initialize memory M (+ batch and edge index)
+        M = torch.zeros([self.b * self.N, self.d * self.h])
+        Mbatch = torch.ones(b, N) * torch.arange(b).unsqueeze(-1).flatten()
+        # Mei = 
+        self.register_buffer('M', M)
+        self.register_buffer('Mbatch', Mbatch)
+        # TODO: ei init
+        # modules
+        self.self_attention = TransformerBlockSparse(d, h)
+
+    def forward(self, x, batch, ei):
+        # vanilla recurrent pass
+        # x :: [b, N, f]
+
+        # TODO: add concatenation of batch and ei
+        #       concat memory in the correct dims
+
+        # M_cat = torch.cat([self.M, x], 0)
+        # M = self.self_attention(M_cat)[:, :self.N]
+
+        self.register_buffer('M', M)
+
+        # TODO: output
+        # for instance:
+        # out
 
 #### Basic tests
 
@@ -355,3 +430,17 @@ resf = F.multi_head_attention_forward(
 x = torch.rand(4, 10)
 xd = x.view(2, 2, 10)
 batch = torch.LongTensor([0, 0, 1, 1])
+
+# sparse self-attention layer testing
+
+x = torch.rand(4, 100)
+xb = x.reshape(2, 2, 100)
+batch = torch.LongTensor([0, 0, 1, 1])
+ei = torch.LongTensor([[0, 0, 1, 1, 2, 2, 3, 3],
+                       [0, 1, 0, 1, 2, 3, 2, 3]])
+ssal = SelfAttentionLayerSparse(Fin=100, Fqk=100, Fv=100, nheads=2)
+sal = SelfAttentionLayer(Fin=100, Fqk=100, Fv=100, nheads=2)
+sal.proj.weight = ssal.proj.weight
+
+res = ssal(x, batch, ei)
+res2 = sal(xb).reshape(4, 100)
