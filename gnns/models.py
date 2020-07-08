@@ -5,6 +5,8 @@ import torch.nn.functional as F
 import babyai
 import gym
 
+import utils
+
 from torch.nn import Linear, Sequential, ReLU
 
 env = gym.make('BabyAI-GoToRedBall-v0')
@@ -299,7 +301,7 @@ class RMC(torch.nn.Module):
     """
     modes = ['RNN', 'LSTM']
 
-    def __init__(self, N, d, h, b, mode='RNN'):
+    def __init__(self, N, d, h, b, mode='RNN', device=torch.device('cpu')):
         super().__init__()
         
         # TODO: do we need the batch size in advance ?
@@ -307,6 +309,8 @@ class RMC(torch.nn.Module):
         self.d = d # dimension of a head
         self.h = h # number of heads
         self.b = b # batch size
+
+        self.device = device
 
         # initialize memory M
         M = torch.zeros([self.b, self.N, self.d * self.h])
@@ -330,7 +334,7 @@ class RMCSparse(torch.nn.Module):
     """
     Relational Memory Core, sparse version.
     """
-    def __init__(self, N, d, h, b, mode='RNN'):
+    def __init__(self, N, d, h, b, mode='RNN', device=torch.device('cpu')):
         super().__init__()
         
         # TODO: do we need the batch size in advance ?
@@ -339,31 +343,38 @@ class RMCSparse(torch.nn.Module):
         self.h = h # number of heads
         self.b = b # batch size
 
+        self.device = device
+
         # initialize memory M (+ batch and edge index)
         M = torch.zeros([self.b * self.N, self.d * self.h])
         Mbatch = torch.ones(b, N) * torch.arange(b).unsqueeze(-1).flatten()
-        # Mei = 
+
         self.register_buffer('M', M)
         self.register_buffer('Mbatch', Mbatch)
         # TODO: ei init
         # modules
         self.self_attention = TransformerBlockSparse(d, h)
 
-    def forward(self, x, batch, ei):
+    def forward(self, x, xbatch):
         # vanilla recurrent pass
         # x :: [b, N, f]
 
         # TODO: add concatenation of batch and ei
         #       concat memory in the correct dims
 
-        # M_cat = torch.cat([self.M, x], 0)
-        # M = self.self_attention(M_cat)[:, :self.N]
+        M_cat = torch.cat([self.M, x], 0)
+        batch_cat = torch.cat([self.Mbatch, xbatch])
+
+        # TODO: only one-way attn between M and X, check it works
+        ei_cat = utils.get_all_ei(self.Mbatch, xbatch)
+        # TODO: check the following:
+        #   - that it runs;
+        #   - that the indices selected are the good ones
+        M = self.self_attention(M_cat, batch_cat, ei_cat)[:(self.b * self.N)]
 
         self.register_buffer('M', M)
 
         # TODO: output
-        # for instance:
-        # out
 
 #### Basic tests
 
