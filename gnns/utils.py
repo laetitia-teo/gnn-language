@@ -60,24 +60,138 @@ def complete_graph(n, self_edges=False):
     I = torch.arange(n)
     ei = torch.stack(torch.meshgrid(I, I), 0).reshape((2, -1))
     # remove self-edges
-    ei = ei[:, ei[0] != ei[1]]
+    if not self_edges:
+        ei = ei[:, ei[0] != ei[1]]
     return ei
 
-def get_ei(batch, device=torch.device('cpu')):
+def complete_crossgraph(n, m, N, bi_directed=True):
+    """
+    This function computes the edge indices for the following situation:
+    there are two graphs with respective number of nodes n and m, the indices
+    of nodes in the first graph go from 0 to n-1 and the indices of nodes in
+    the second graph go from N to m + N - 1.
+
+    Used when concatenating graphs that belong to the same scenes, e.g. when
+    assembling objects and memory in RMC.
+
+    If bi_directed is False, we only return the edges from graph 2 to graph 1.
+    """
+    In = torch.arange(n)
+    Im = torch.arange(m)
+    eix, eiy = torch.meshgrid(In, Im)
+    eix = eix + N
+    ei = torch.stack([eix, eiy], 0).reshape(2, -1)
+
+    if bi_directed:
+        # connect back nodes to make bi-directional edges
+        ei = torch.cat([ei, ei.flip(0)], 1)
+
+    return ei
+
+b1 = [0, 0, 0, 1, 1]
+b2 = [0, 0, 1, 1]
+
+def get_ei(batch, self_edges=True, device=torch.device('cpu')):
     """
     Given a batch index, returns the associated edge index tensor, for a
     fully-connected bi-directional graph with self-edges removed.
     """
+    if not isinstance(batch, torch.Tensor):
+        batch = torch.tensor(batch)
+
     N = len(batch)
 
     # get numbers of objects from conversion between sparse matrix formats
     coo = coo_matrix((np.empty(N), (batch.numpy(), np.arange(N))))
     cum = coo.tocsr().indptr
     ni = cum[1:] - cum[:-1]
-    print(ni)
 
     # get edge index tensor
-    ei = torch.cat([complete_graph(n) + cn for n, cn in zip(ni, cum)], 1)
+    ei = torch.cat([complete_graph(n, self_edges) + cn \
+                    for n, cn in zip(ni, cum)], 1)
+    ei = ei.to(device)
+
+    return ei
+
+def get_crossgraph_ei(batch1,
+                      batch2,
+                      bi_directed=True,
+                      device=torch.device('cpu')):
+    """
+    Get cross graph ei cross_graph edge index for two provided batchtensors.
+    """
+    if not isinstance(batch1, torch.Tensor):
+        batch1 = torch.tensor(batch1)
+    if not isinstance(batch2, torch.Tensor):
+        batch2 = torch.tensor(batch2)
+
+    N = len(batch1)
+    M = len(batch2)
+
+    # get numbers of objects for both batch tensors
+    coo1 = coo_matrix((np.empty(N), (batch1.numpy(), np.arange(N))))
+    cum1 = coo1.tocsr().indptr
+    ni1 = cum1[1:] - cum1[:-1]
+
+    coo2 = coo_matrix((np.empty(M), (batch2.numpy(), np.arange(M))))
+    cum2 = coo2.tocsr().indptr
+    ni2 = cum2[1:] - cum2[:-1]
+
+    # get edge index tensor
+    ei = torch.cat(
+        [complete_crossgraph(m, n, N, bi_directed) + cn\
+            for n, m, cn in zip(ni1, ni2, cum2)],
+        1,
+    )
+    ei = ei.to(device)
+
+    return ei
+
+def get_all_ei(batch1,
+               batch2,
+               self_edges=True,
+               bi_directed=True,
+               device=torch.device('cpu')):
+    """
+    Gets all eis (inter-graph, cross-graph) by combining the two previous
+    functions.
+
+    TODO: maybe there's a smarter way to compute this.
+    """
+    if not isinstance(batch1, torch.Tensor):
+        batch1 = torch.tensor(batch1)
+    if not isinstance(batch2, torch.Tensor):
+        batch2 = torch.tensor(batch2)
+
+    N = len(batch1)
+    M = len(batch2)
+
+    # get numbers of objects for both batch tensors
+    coo1 = coo_matrix((np.empty(N), (batch1.numpy(), np.arange(N))))
+    cum1 = coo1.tocsr().indptr
+    ni1 = cum1[1:] - cum1[:-1]
+
+    ei1 = torch.cat([complete_graph(n, self_edges) + cn \
+                     for n, cn in zip(ni1, cum1)], 1)
+
+    coo2 = coo_matrix((np.empty(M), (batch2.numpy(), np.arange(M))))
+    cum2 = coo2.tocsr().indptr
+    ni2 = cum2[1:] - cum2[:-1]
+
+    ei2 = torch.cat([complete_graph(n, self_edges) + cn \
+                     for n, cn in zip(ni2, cum2)], 1)
+
+    # get edge index tensor
+    ei12 = torch.cat(
+        [complete_crossgraph(m, n, N, False) \
+            + torch.tensor([cm, cn]).view(2, 1) \
+            for n, m, cn, cm in zip(ni1, ni2, cum1, cum2)],
+        1,
+    )
+    if bi_directed:
+        ei12 = torch.cat([ei12, ei12.flip(0)], 1)
+
+    ei = torch.cat([ei1, ei2 + N, ei12], 1)
     ei = ei.to(device)
 
     return ei
