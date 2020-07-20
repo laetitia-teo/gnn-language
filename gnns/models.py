@@ -298,28 +298,66 @@ class TransformerBlockSparse(torch.nn.Module):
 class RMC(torch.nn.Module):
     """
     Relational Memory Core.
+
+    TODO: test the LSTM-like update
+
+    Please note that using this model with multiple input vectors, in LSTM
+    mode leads to concatenating the inputs in the first dimension when
+    computing the gates for the LSTM update. This seems suboptimal from a
+    relational architecture point of view, and would orient us towards using
+    a per-slot LSTM (where the gates would be computed per-slot) instead.
+
+    -> It breaks the permutation invariance of inputs
     """
     modes = ['RNN', 'LSTM']
 
-    def __init__(self, N, d, h, b, mode='RNN', device=torch.device('cpu')):
+    def __init__(self,
+                 N,
+                 d,
+                 h,
+                 b,
+                 Nx=None,
+                 mode='RNN',
+                 device=torch.device('cpu')):
         super().__init__()
         
         # TODO: do we need the batch size in advance ?
         self.N = N # number of slots
-        self.d = d # dimension of a head
+        if Nx is None: 
+            self.Nx = N # number of slots for the input
+        else:
+            self.Nx = Nx
+        self.d = d # dimension of a single head
         self.h = h # number of heads
         self.b = b # batch size
 
         self.device = device
+        self.mode = mode
 
         # initialize memory M
+        # TODO: unique initialization of each slot
         M = torch.zeros([self.b, self.N, self.d * self.h])
         self.register_buffer('M', M)
 
         # modules
-        self.self_attention = TransformerBlock(d, h)
+        self.self_attention = TransformerBlock(h * d, h)
 
-    def forward(self, x):
+        if mode in ['LSTM', 'LSTM_noout']:
+            # hidden state
+            hid = torch.zeros([self.b, self.N, self.d * self.h])
+            self.register_buffer('hid', hid)
+
+            # scalar LSTM gates
+            self.Wf = Linear(d * h * self.Nx, 1)
+            self.Uf = Linear(d * h, 1)
+
+            self.Wi = Linear(d * h * self.Nx, 1)
+            self.Ui = Linear(d * h, 1)
+
+            self.Wo = Linear(d * h * self.Nx, 1)
+            self.Uo = Linear(d * h, 1)
+
+    def _forwardRNN(self, x):
         # vanilla recurrent pass
         # x :: [b, N, f]
 
@@ -328,7 +366,53 @@ class RMC(torch.nn.Module):
 
         self.register_buffer('M', M)
 
-        # TODO: output
+        # output is flattened memory
+        out = M.view(self.b, -1)
+        return out
+
+    def _forwardLSTM(self, x):
+        # LSTM recurrent pass
+        M_cat = torch.cat([self.M, x], 1)
+        Mtilde = self.self_attention(M_cat)[:, :self.N]
+
+        x_cat = x.flatten(1).unsqueeze(1)
+
+        f = self.Wf(x_cat) + self.Uf(self.M)
+        i = self.Wi(x_cat) + self.Uf(self.M)
+        o = self.Wo(x_cat) + self.Uo(self.M)
+
+        M = torch.sigmoid(f) * self.M + torch.sigmoid(i) * torch.tanh(Mtilde)
+        hid = torch.sigmoid(o) * torch.tanh(M)
+
+        self.register_buffer('M', M)
+        self.register_buffer('hid', hid)
+
+        return hid.view(self.b, -1)
+
+    def _forwardLSTM_noout(self, x):
+        # LSTM recurrent pass, no output gate
+        M_cat = torch.cat([self.M, x], 1)
+        Mtilde = self.self_attention(M_cat)[:, :self.N]
+        
+        x_cat = x.flatten(1).unsqueeze(1)
+
+        f = self.Wf(x_cat) + self.Uf(self.M)
+        i = self.Wi(x_cat) + self.Uf(self.M)
+        o = self.Wo(x_cat) + self.Uo(self.M)
+
+        M = torch.sigmoid(f) * M + torch.sigmoid(i) * torch.tanh(Mtilde)
+        hid = M
+
+        self.register_buffer('M', M)
+        self.register_buffer('hid', hid)
+
+        return hid.view(self.b, -1)
+
+    def forward(self, x):
+        if self.mode == 'RNN':
+            return self._forwardRNN(x)
+        elif self.mode == 'LSTM':
+            return self._forwardLSTM(x)
 
 class RMCSparse(torch.nn.Module):
     """
@@ -346,6 +430,7 @@ class RMCSparse(torch.nn.Module):
         self.device = device
 
         # initialize memory M (+ batch and edge index)
+        # TODO: unique initialization
         M = torch.zeros([self.b * self.N, self.d * self.h])
         Mbatch = torch.ones(b, N) * torch.arange(b).unsqueeze(-1).flatten()
 
@@ -455,3 +540,9 @@ sal.proj.weight = ssal.proj.weight
 
 res = ssal(x, batch, ei)
 res2 = sal(xb).reshape(4, 100)
+
+# test dense RMC implem
+
+rmc = RMC(4, 10, 2, 2)
+rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
+x = torch.rand(2, 7, 20)
