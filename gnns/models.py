@@ -224,8 +224,10 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         print(f"aw shape: {aw.shape}")
         print(f"src: {src}")
         # softmax reduction
-        aw = scatter_softmax(aw, src)
+        aw = scatter_softmax(aw, dest)
         print(f"aw shape, after softmax: {aw.shape}")
+
+        ## TODO: issue is here, fix to make identical to dense version
 
         out = aw.view([-1, H, 1]) * vs
         out = scatter_sum(out, src)
@@ -267,7 +269,7 @@ class TransformerBlock(torch.nn.Module):
 
 class TransformerBlockSparse(torch.nn.Module):
     """
-    Sparse version of the above, different semantics for the input format.
+    Sparse version of the above, different input format.
     """
     def __init__(self, d, h):
         super().__init__()
@@ -293,13 +295,59 @@ class TransformerBlockSparse(torch.nn.Module):
 
         return z
 
+### Base class for relational memory
+
+class RelationalMemory(torch.nn.Module):
+    """
+    TODO: change this into sparse version.
+
+    Defines the base class for all relational memory modules.
+    K is the number of slots in the memory, Fmem is the feature dimension for
+    the slots. (B is the batch size when used in batch computation.)
+
+    A subclass has to define:
+        - a _one_step method that outputs a tuple of (next_memory, output);
+        - optionally, a _mem_init method that initializes the memory.
+    """
+    def __init__(self, B, K, Fmem):
+
+        super().__init__()
+        self.B = B
+        self.K = K
+        self.Fmem = Fmem
+
+        M = self._mem_init()
+        self.register_buffer('M', M)
+
+    def _mem_init(self):
+        """
+        Default initialization method for the memory: the identity matrix of
+        size K is completed with zeros (to ensure different behaviors for each
+        of the slots).
+        """
+        M = torch.cat([
+            torch.eye(self.N).expand([self.B, self.N, self.N]),
+            torch.zeros([self.B, self.N, self.d * self.h - self.N]),
+            -1
+        ])
+
+    def _one_step(self, x, M):
+        """
+        Dummy memory update.
+        """
+        return M, M[:, 0]
+
+    def forward(self, x):
+        M, out = self._one_step(x, self.M)
+        self.register_buffer('M', M)
+
+        return out
+
 #### Full Relational Memory Core
 
 class RMC(torch.nn.Module):
     """
     Relational Memory Core.
-
-    TODO: test the LSTM-like update
 
     Please note that using this model with multiple input vectors, in LSTM
     mode leads to concatenating the inputs in the first dimension when
@@ -335,8 +383,11 @@ class RMC(torch.nn.Module):
         self.mode = mode
 
         # initialize memory M
-        # TODO: unique initialization of each slot
-        M = torch.zeros([self.b, self.N, self.d * self.h])
+        M = torch.cat([
+            torch.eye(self.N).expand([self.b, self.N, self.N]),
+            torch.zeros([self.b, self.N, self.d * self.h - self.N])
+        ])
+        # M = torch.zeros([self.b, self.N, self.d * self.h])
         self.register_buffer('M', M)
 
         # modules
@@ -354,8 +405,9 @@ class RMC(torch.nn.Module):
             self.Wi = Linear(d * h * self.Nx, 1)
             self.Ui = Linear(d * h, 1)
 
-            self.Wo = Linear(d * h * self.Nx, 1)
-            self.Uo = Linear(d * h, 1)
+            if mode == 'LSTM':
+                self.Wo = Linear(d * h * self.Nx, 1)
+                self.Uo = Linear(d * h, 1)
 
     def _forwardRNN(self, x):
         # vanilla recurrent pass
@@ -385,7 +437,6 @@ class RMC(torch.nn.Module):
         hid = torch.sigmoid(o) * torch.tanh(M)
 
         self.register_buffer('M', M)
-        self.register_buffer('hid', hid)
 
         return hid.view(self.b, -1)
 
@@ -398,13 +449,11 @@ class RMC(torch.nn.Module):
 
         f = self.Wf(x_cat) + self.Uf(self.M)
         i = self.Wi(x_cat) + self.Uf(self.M)
-        o = self.Wo(x_cat) + self.Uo(self.M)
 
         M = torch.sigmoid(f) * M + torch.sigmoid(i) * torch.tanh(Mtilde)
         hid = M
 
         self.register_buffer('M', M)
-        self.register_buffer('hid', hid)
 
         return hid.view(self.b, -1)
 
@@ -413,6 +462,8 @@ class RMC(torch.nn.Module):
             return self._forwardRNN(x)
         elif self.mode == 'LSTM':
             return self._forwardLSTM(x)
+        elif self.mode == 'LSTM_noout':
+            return self._forwardLSTM_noout(x)
 
 class RMCSparse(torch.nn.Module):
     """
@@ -429,37 +480,118 @@ class RMCSparse(torch.nn.Module):
 
         self.device = device
 
-        # initialize memory M (+ batch and edge index)
-        # TODO: unique initialization
-        M = torch.zeros([self.b * self.N, self.d * self.h])
-        Mbatch = torch.ones(b, N) * torch.arange(b).unsqueeze(-1).flatten()
+        # initialize memory M, batch and edge index
+        eye = torch.eye(N).expand([b, N, N])
+        eyeflatten = eye.reshape(b * N, N)
+        M = torch.cat([
+            eyeflatten,
+            torch.zeros(b * N, d * h - N)])
 
+        Mbatch = torch.arange(b).expand(N, b).transpose(0, 1).flatten()
+
+        # we dont need edge indices, we compute them at each time step (?)
         self.register_buffer('M', M)
         self.register_buffer('Mbatch', Mbatch)
-        # TODO: ei init
+
         # modules
         self.self_attention = TransformerBlockSparse(d, h)
 
-    def forward(self, x, xbatch):
-        # vanilla recurrent pass
-        # x :: [b, N, f]
+        if mode in ['LSTM', 'LSTM_noout']:
+            # hidden state
+            hid = torch.zeros([self.b, self.N, self.d * self.h])
+            self.register_buffer('hid', hid)
 
-        # TODO: add concatenation of batch and ei
-        #       concat memory in the correct dims
+            # scalar LSTM gates
+            self.Wf = Linear(d * h, 1)
+            self.Uf = Linear(d * h, 1)
 
+            self.Wi = Linear(d * h, 1)
+            self.Ui = Linear(d * h, 1)
+
+            if mode == 'LSTM':
+                self.Wo = Linear(d * h, 1)
+                self.Uo = Linear(d * h, 1)
+
+    def _forwardRNN(self, x, xbatch):
+        """
+        Vanilla recurrent pass.
+
+        Output is concatenation of the memory in the -1 dim.
+        """
         M_cat = torch.cat([self.M, x], 0)
-        batch_cat = torch.cat([self.Mbatch, xbatch])
-
+        batch_cat = torch.cat([self.Mbatch, xbatch], 0)
         # TODO: only one-way attn between M and X, check it works
         ei_cat = utils.get_all_ei(self.Mbatch, xbatch)
+
         # TODO: check the following:
         #   - that it runs;
         #   - that the indices selected are the good ones
         M = self.self_attention(M_cat, batch_cat, ei_cat)[:(self.b * self.N)]
+        self.register_buffer('M', M)
+        
+        out = M.reshape(self.b, self.N, self.d * self.h).view(self.b, -1)
+        return out
+
+    def _forwardLSTM(self, x, xbatch):
+        """
+        LSTM recurrent pass.
+        """
+        M_cat = torch.cat([self.M, x], 0)
+        batch_cat = torch.cat([self.Mbatch, xbatch], 0)
+        ei_cat = utils.get_all_ei(self.Mbatch, xbatch)
+
+        Mtilde = self.self_attention(M_cat, batch_cat, ei_cat)
+        Mtilde = Mtilde[:(self.b * self.N)]
+
+        # for now we use sum
+        # TODO: check validity of broadcasting according to M
+        x_sum = scatter_sum(x, xbatch)[self.Mbatch]
+
+        f = self.Wf(x_sum) + self.Uf(self.M)
+        i = self.Wi(x_sum) + self.Uf(self.M)
+        o = self.Wo(x_sum) + self.Uo(self.M)
+
+        M = torch.sigmoid(f) * self.M + torch.sigmoid(i) * torch.tanh(Mtilde)
+        hid = torch.sigmoid(o) * torch.tanh(M)
 
         self.register_buffer('M', M)
 
-        # TODO: output
+        hid = hid.reshape(self.b, self.N, self.d * self.h).view(self.b, -1)
+        return hid
+
+    def _forwardLSTM_noout(self, x, xbatch):
+        """
+        LSTM recurrent pass, no output gate.
+        """
+        M_cat = torch.cat([self.M, x], 0)
+        batch_cat = torch.cat([self.Mbatch, xbatch], 0)
+        ei_cat = utils.get_all_ei(self.Mbatch, xbatch)
+
+        Mtilde = self.self_attention(M_cat, batch_cat, ei_cat)
+        Mtilde = Mtilde[:(self.b * self.N)]
+
+        # for now we use sum
+        # TODO: check validity of broadcasting according to M
+        x_sum = scatter_sum(x, xbatch)[self.Mbatch]
+
+        f = self.Wf(x_sum) + self.Uf(self.M)
+        i = self.Wi(x_sum) + self.Uf(self.M)
+
+        M = torch.sigmoid(f) * self.M + torch.sigmoid(i) * torch.tanh(Mtilde)
+        hid = M
+
+        self.register_buffer('M', M)
+
+        hid = hid.reshape(self.b, self.N, self.d * self.h).view(self.b, -1)
+        return hid
+
+    def forward(self, x, batch):
+        if self.mode == 'RNN':
+            return self._forwardRNN(x, batch)
+        elif self.mode == 'LSTM':
+            return self._forwardLSTM(x, batch)
+        elif self.mode == 'LSTM_noout':
+            return self._forwardLSTM_noout(x, batch)
 
 #### Basic tests
 
@@ -543,6 +675,6 @@ res2 = sal(xb).reshape(4, 100)
 
 # test dense RMC implem
 
-rmc = RMC(4, 10, 2, 2)
-rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
-x = torch.rand(2, 7, 20)
+# rmc = RMC(4, 10, 2, 2)
+# rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
+# x = torch.rand(2, 7, 20)
