@@ -21,7 +21,7 @@ def scatter_sum(x, batch):
     
     st = torch.sparse.FloatTensor(
         i,
-        x, 
+        x,
         torch.Size([nbatches, nelems] + list(x.shape[1:])),
     )
     return torch.sparse.sum(st, dim=1).values()
@@ -114,15 +114,9 @@ class MLP(torch.nn.Module):
 
 #### MHSA and Transformer
 
-# TODO: adapt for variable input size
-# idea: use hybrid sparse-dense tensors provided by torch.sparse
-
 class SelfAttentionLayer(torch.nn.Module):
     """
     Multi-head Self-Attention layer.
-
-    TODO: add support for diffrent numbers of objects between queries and
-        keys/values.
 
     Inputs:
         - x: the input data for a minibatch, concatenated in the 0-th dim.
@@ -147,7 +141,6 @@ class SelfAttentionLayer(torch.nn.Module):
         self.proj = Linear(Fin, self.Ftot, bias=False)
 
     def forward(self, x):
-        # alternative formulation of forward pass
 
         B, N, _ = x.shape
         H = self.nheads
@@ -163,12 +156,9 @@ class SelfAttentionLayer(torch.nn.Module):
         v = v.reshape(B, N, H, Fhv).transpose(1, 2)
 
         aw = q @ (k.transpose(2, 3))
-        aw = torch.softmax(aw, dim=-2)
-
-        # print(f"shape: {aw.shape}")
+        aw = torch.softmax(aw, dim=-1)
 
         out = (aw @ v)
-        # print(f"shape: {out.shape}")
         out = out.transpose(1, 2).reshape(B, N, self.Fv)
 
         return out
@@ -216,18 +206,11 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         v = v.reshape(-1, H, Fhv)
 
         qs, ks, vs = q[src], k[dest], v[dest]
-        print(f"qs shape: {qs.shape}")
         # dot product
         aw = qs.view(-1, H, 1, Fh) @ ks.view(-1, H, Fh, 1)
-        print(f"aw shape: {aw.shape}")
         aw = aw.squeeze()
-        print(f"aw shape: {aw.shape}")
-        print(f"src: {src}")
         # softmax reduction
-        aw = scatter_softmax(aw, dest)
-        print(f"aw shape, after softmax: {aw.shape}")
-
-        ## TODO: issue is here, fix to make identical to dense version
+        aw = scatter_softmax(aw, src)
 
         out = aw.view([-1, H, 1]) * vs
         out = scatter_sum(out, src)
