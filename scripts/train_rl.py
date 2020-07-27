@@ -148,9 +148,11 @@ if args.algo == "ppo":
 else:
     raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 
-# When using extra binary information, more tensors (model params) are initialized compared to when we don't use that.
-# Thus, there starts to be a difference in the random state. If we want to avoid it, in order to make sure that
-# the results of supervised-loss-coef=0. and extra-binary-info=0 match, we need to reseed here.
+# When using extra binary information, more tensors (model params) are
+# initialized compared to when we don't use that.
+# Thus, there starts to be a difference in the random state. If we want to
+# avoid it, in order to make sure that the results of supervised-loss-coef=0.
+# and extra-binary-info=0 match, we need to reseed here.
 
 utils.seed(args.seed)
 
@@ -235,17 +237,26 @@ while status['num_frames'] < args.frames:
             [1 if r > 0 else 0 for r in logs["return_per_episode"]])
         num_frames_per_episode = utils.synthesize(logs["num_frames_per_episode"])
 
-        data = [status['i'], status['num_episodes'], status['num_frames'],
-                fps, total_ellapsed_time,
+        data = [status['i'],
+                status['num_episodes'],
+                status['num_frames'],
+                fps,
+                total_ellapsed_time,
                 *return_per_episode.values(),
                 success_per_episode['mean'],
                 *num_frames_per_episode.values(),
-                logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"],
-                logs["loss"], logs["grad_norm"]]
+                logs["entropy"],
+                logs["value"],
+                logs["policy_loss"],
+                logs["value_loss"],
+                logs["loss"],
+                logs["grad_norm"]]
 
-        format_str = ("U {} | E {} | F {:06} | FPS {:04.0f} | D {} | R:xsmM {: .2f} {: .2f} {: .2f} {: .2f} | "
-                      "S {:.2f} | F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "
-                      "pL {: .3f} | vL {:.3f} | L {:.3f} | gN {:.3f} | ")
+        format_str = (
+            "U {} | E {} | F {:06} | FPS {:04.0f} | D {} | "
+            "R:xsmM {: .2f} {: .2f} {: .2f} {: .2f} | S {:.2f} | "
+            "F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "
+            "pL {: .3f} | vL {:.3f} | L {:.3f} | gN {:.3f} | ")
 
         logger.info(format_str.format(*data))
         if args.tb:
@@ -267,20 +278,38 @@ while status['num_frames'] < args.frames:
         agent = ModelAgent(args.model, obss_preprocessor, argmax=True)
         agent.model = acmodel
         agent.model.eval()
-        logs = batch_evaluate(agent, test_env_name, args.val_seed, args.val_episodes)
+
+        logs = batch_evaluate(
+            agent,
+            test_env_name,
+            args.val_seed,
+            args.val_episodes
+        )
         agent.model.train()
         mean_return = np.mean(logs["return_per_episode"])
-        success_rate = np.mean([1 if r > 0 else 0 for r in logs['return_per_episode']])
+        success_rate = np.mean(
+            [1 if r > 0 else 0 for r in logs['return_per_episode']]
+        )
         save_model = False
+        
         if success_rate > best_success_rate:
             best_success_rate = success_rate
             save_model = True
-        elif (success_rate == best_success_rate) and (mean_return > best_mean_return):
+        
+        elif ((success_rate == best_success_rate)
+                and (mean_return > best_mean_return)):
+
             best_mean_return = mean_return
             save_model = True
+        
         if save_model:
             utils.save_model(acmodel, args.model + '_best')
-            obss_preprocessor.vocab.save(utils.get_vocab_path(args.model + '_best'))
-            logger.info("Return {: .2f}; best model is saved".format(mean_return))
+            obss_preprocessor.vocab.save(
+                utils.get_vocab_path(args.model + '_best')
+            )
+            logger.info("Return {: .2f}; best model is saved"\
+                .format(mean_return))
+        
         else:
-            logger.info("Return {: .2f}; not the best model; not saved".format(mean_return))
+            logger.info("Return {: .2f}; not the best model; not saved"\
+                .format(mean_return))
