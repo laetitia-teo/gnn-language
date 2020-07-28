@@ -58,36 +58,15 @@ def scatter_softmax(x, batch):
     fx = x.shape[-1]
     i = torch.stack([batch, torch.arange(nelems)])
     
-    # TODO: patch for numerical stability
+    # substract max for numerical stability
+    xm = x.max(0).values
+    x = x - xm
+
     exp = x.exp()
     st = torch.sparse.FloatTensor(
         i,
         exp,
         torch.Size([nbatches, nelems] + list(x.shape[1:])),
-    )
-    expsum = torch.sparse.sum(st, dim=1).values()[batch]
-    return exp / expsum
-
-def scatter_softmax_nums(x, batch):
-    """
-    Computes the softmax-reduction of elements of x as given by the batch index
-    tensor.
-
-    TODO: fix this, values on last dim are not independent
-    """
-    nbatches = batch[-1] + 1
-    nelems = len(batch)
-    fx = x.shape[-1]
-    i = torch.stack([batch, torch.arange(nelems)])
-    
-    exp = x.exp()
-    # sustract largest element for numerical stability of softmax
-    xm = x.max(0).values
-    exp = exp - xm
-    st = torch.sparse.FloatTensor(
-        i,
-        exp,
-        torch.Size([nbatches, nelems] + list(exp.shape[1:])),
     )
     expsum = torch.sparse.sum(st, dim=1).values()[batch]
     return exp / expsum
@@ -282,8 +261,6 @@ class TransformerBlockSparse(torch.nn.Module):
 
 class RelationalMemory(torch.nn.Module):
     """
-    TODO: change this into sparse version.
-
     Defines the base class for all relational memory modules.
     K is the number of slots in the memory, Fmem is the feature dimension for
     the slots. (B is the batch size when used in batch computation.)
@@ -352,7 +329,6 @@ class RMC(torch.nn.Module):
                  device=torch.device('cpu')):
         super().__init__()
         
-        # TODO: do we need the batch size in advance ?
         self.N = N # number of slots
         if Nx is None: 
             self.Nx = N # number of slots for the input
@@ -455,7 +431,6 @@ class RMCSparse(torch.nn.Module):
     def __init__(self, N, d, h, b, mode='RNN', device=torch.device('cpu')):
         super().__init__()
         
-        # TODO: do we need the batch size in advance ?
         self.N = N # number of slots
         self.d = d # dimension of a head
         self.h = h # number of heads
@@ -575,6 +550,209 @@ class RMCSparse(torch.nn.Module):
             return self._forwardLSTM(x, batch)
         elif self.mode == 'LSTM_noout':
             return self._forwardLSTM_noout(x, batch)
+
+### self-attention-LSTM GNN
+
+# Dense version
+
+class SelfAttentionLSTM_GNN(torch.nn.Module):
+    """
+    A GNN where the edge model + edge aggreg is a self-attention layer.
+    There are K hidden states and cells, each corresponding to a particular
+    memory slot. The LSTM parameters are shared between all slots.
+
+    Dense implem (should we call this a GNN ?)
+
+    We have two choices for what vectors we use for the self-attention update:
+    hidden vectors of cells. We'll use cells here, but that may not be the best
+    choice.
+
+    The model only does one forward pass on the sequence.
+
+    Arguments:
+        - B: batch size, must be specified in advance;
+        - K: number of memory slots;
+        - Fmem: number of features of each slot;
+        - nheads: number of heads in the self-attention mechanism;
+        - gating: can one of "slot" or "feature".
+            "slot" means the gating mechanism happens at the level of the whole
+            slot; 
+            "feature" means the gating mechanism happens at the level of
+            individual features.
+    """
+    def __init__(self, B, K, Fmem, nheads, gating="slot"):
+        super().__init__()
+
+        self.B = B
+        self.K = K
+        self.Fmem = Fmem
+        self.nheads = nheads
+        self.gating = gating
+
+        # maybe replace with something else
+        self.self_attention = TransformerBlock(
+            Fmem,
+            nheads,
+        )
+
+        if gating == "feature":
+            self.proj = nn.Linear(2 * Fmem, 4 * Fmem)
+        elif gating == "slot":
+            self.proj = nn.Linear(2 * Fmem, 4)
+        else:
+            raise ValueError("the 'gating' argument must be one of:\n"
+                             "\t- 'slot'\n\t- 'feature'")
+
+        C, H = self._mem_init()
+        self.register_buffer('C', C)
+        self.register_buffer('H', H)
+
+    def _mem_init(self):
+        """
+        Some form of initialization where the vectors are unique.
+        """
+        C = torch.cat([
+            torch.eye(self.K).expand([self.B, self.K, self.K]),
+            torch.zeros([self.B, self.K, self.Fmem - self.K])
+        ], -1)
+        H = torch.cat([
+            torch.eye(self.K).expand([self.B, self.K, self.K]),
+            torch.zeros([self.B, self.K, self.Fmem - self.K])
+        ], -1)
+        return C, H
+
+    def forward(self, x):
+
+        # add input vectors to perform self-attention
+        C_cat = torch.cat([self.C, x], 1)
+        # input to the slot-LSTM
+        X = self.self_attention(C_cat)[:, :self.K]
+
+        # compute forget, input and output gates
+        HX = torch.cat([self.H, X], -1)
+        f, i, o, Ctilde = self.proj(HX).chunk(4, -1)
+
+        # note: no tanh in content update and output
+        C = self.C * torch.sigmoid(f) + Ctilde * torch.sigmoid(i)
+        H = C * torch.sigmoid(o)
+
+        # register memories
+        self.register_buffer('C', C)
+        self.register_buffer('H', H)
+
+        return H
+
+# Sparse version
+
+class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
+    """
+    A GNN where the edge model + edge aggreg is a self-attention layer.
+    There are K hidden states and cells, each corresponding to a particular
+    memory slot. The LSTM parameters are shared between all slots.
+
+    Sparse implementation, can deal with inputs of variable size.    
+
+    The model only does one forward pass on the sequence.
+
+    Arguments:
+        - B: batch size, must be specified in advance;
+        - K: number of memory slots;
+        - Fmem: number of features of each slot;
+        - nheads: number of heads in the self-attention mechanism;
+        - gating: can one of "slot" or "feature".
+            "slot" means the gating mechanism happens at the level of the whole
+            slot; 
+            "feature" means the gating mechanism happens at the level of
+            individual features.
+    """
+    def __init__(
+            self,
+            B,
+            K,
+            Fmem,
+            nheads,
+            gating="slot",
+            device=torch.device('cpu')):
+
+        super().__init__()
+
+        self.B = B
+        self.K = K
+        self.Fmem = Fmem 
+        self.nheads = nheads
+        self.gating = gating
+
+        self.device = device
+
+        self.self_attention = TransformerBlockSparse(
+            Fmem,
+            nheads,
+        )
+
+        if gating == "feature":
+            self.proj = nn.Linear(2 * Fmem, 4 * Fmem)
+        elif gating == "slot":
+            self.proj = nn.Linear(2 * Fmem, 4)
+        else:
+            raise ValueError("the 'gating' argument must be one of:\n"
+                             "\t- 'slot'\n\t- 'feature'")
+
+        C, Cbatch, H, Hbatch = self._mem_init()
+        self.register_buffer('C', C)
+        self.register_buffer('Cbatch', Cbatch)
+        self.register_buffer('H', H)
+
+    def _mem_init(self):
+        """
+        Some form of initialization where the vectors are unique.
+        """
+        eye = torch.eye(self.K).expand([self.B, self.K, self.K])
+        eyeflatten = eye.reshape(self.B * self.K, self.K)
+        
+        C = torch.cat([
+            eyeflatten,
+            torch.zeros(self.B * self.K, self.Fmem * self.nheads - self.K)])
+        Cbatch = torch.arange(self.B).expand(self.K, self.B)
+        Cbatch = Cbatch.transpose(0, 1).flatten()
+
+        H = torch.cat([
+            eyeflatten,
+            torch.zeros(self.B * self.K, self.Fmem * self.nheads - self.K)])
+        # we don't compute a batch index tensor for H because it is always the
+        # same as the one for C
+
+        return C, Cbatch, H
+
+    def forward(self, x, xbatch):
+
+        # add input vectors to perform self-attention
+        # also compute the batch indices and the edge indices for the self-
+        # attention computation
+        C_cat = torch.cat([self.C, x], 0)
+        batch_cat = torch.cat([self.Cbatch, xbatch], 0)
+        ei_cat = utils.get_all_ei(self.Cbatch, xbatch)
+        
+        # input to the slot-LSTM
+        X = self.self_attention(C_cat, batch_cat, ei_cat)
+        # exclude things that are not in memory
+        X = X[:(self.b * self.N)]
+
+        # compute forget, input and output gates
+        # TODO: check if all these vectors are aligned
+        HX = torch.cat([self.H, X], -1)
+        f, i, o, Ctilde = self.proj(HX).chunk(4, -1)
+
+        # note: no tanh in content update and output
+        C = self.C * torch.sigmoid(f) + Ctilde * torch.sigmoid(i)
+        H = C * torch.sigmoid(o)
+
+        # register memories
+        self.register_buffer('C', C)
+        self.register_buffer('H', H)
+
+        return H
+
+
 
 #### Basic tests
 
