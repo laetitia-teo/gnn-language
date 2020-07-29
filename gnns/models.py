@@ -1,13 +1,12 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 import babyai
 import gym
 
 import utils
-
-from torch.nn import Linear, Sequential, ReLU
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
@@ -81,12 +80,12 @@ class MLP(torch.nn.Module):
         lin = layer_sizes.pop(0)
 
         for i, ls in enumerate(layer_sizes):
-            layers.append(Linear(lin, ls))
+            layers.append(nn.Linear(lin, ls))
             if i < len(layer_sizes) - 1:
-                layers.append(ReLU())
+                layers.append(nn.ReLU())
             ls = lin
 
-        self.net = Sequential(*layers)
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
@@ -117,7 +116,7 @@ class SelfAttentionLayer(torch.nn.Module):
         # for now values have the same dim as keys and queries
         self.Ftot = (2*Fqk + Fv)
 
-        self.proj = Linear(Fin, self.Ftot, bias=False)
+        self.proj = nn.Linear(Fin, self.Ftot, bias=False)
 
     def forward(self, x):
 
@@ -162,7 +161,7 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         # for now values have the same dim as keys and queries
         self.Ftot = (2*Fqk + Fv)
 
-        self.proj = Linear(Fin, self.Ftot, bias=False)
+        self.proj = nn.Linear(Fin, self.Ftot, bias=False)
 
     def forward(self, x, batch, ei):
         # batch is the batch index tensor
@@ -358,15 +357,15 @@ class RMC(torch.nn.Module):
             self.register_buffer('hid', hid)
 
             # scalar LSTM gates
-            self.Wf = Linear(d * h * self.Nx, 1)
-            self.Uf = Linear(d * h, 1)
+            self.Wf = nn.Linear(d * h * self.Nx, 1)
+            self.Uf = nn.Linear(d * h, 1)
 
-            self.Wi = Linear(d * h * self.Nx, 1)
-            self.Ui = Linear(d * h, 1)
+            self.Wi = nn.Linear(d * h * self.Nx, 1)
+            self.Ui = nn.Linear(d * h, 1)
 
             if mode == 'LSTM':
-                self.Wo = Linear(d * h * self.Nx, 1)
-                self.Uo = Linear(d * h, 1)
+                self.Wo = nn.Linear(d * h * self.Nx, 1)
+                self.Uo = nn.Linear(d * h, 1)
 
     def _forwardRNN(self, x):
         # vanilla recurrent pass
@@ -460,15 +459,15 @@ class RMCSparse(torch.nn.Module):
             self.register_buffer('hid', hid)
 
             # scalar LSTM gates
-            self.Wf = Linear(d * h, 1)
-            self.Uf = Linear(d * h, 1)
+            self.Wf = nn.Linear(d * h, 1)
+            self.Uf = nn.Linear(d * h, 1)
 
-            self.Wi = Linear(d * h, 1)
-            self.Ui = Linear(d * h, 1)
+            self.Wi = nn.Linear(d * h, 1)
+            self.Ui = nn.Linear(d * h, 1)
 
             if mode == 'LSTM':
-                self.Wo = Linear(d * h, 1)
-                self.Uo = Linear(d * h, 1)
+                self.Wo = nn.Linear(d * h, 1)
+                self.Uo = nn.Linear(d * h, 1)
 
     def _forwardRNN(self, x, xbatch):
         """
@@ -572,6 +571,7 @@ class SelfAttentionLSTM_GNN(torch.nn.Module):
     Arguments:
         - B: batch size, must be specified in advance;
         - K: number of memory slots;
+        - Fin: number of features of the input;
         - Fmem: number of features of each slot;
         - nheads: number of heads in the self-attention mechanism;
         - gating: can one of "slot" or "feature".
@@ -580,7 +580,7 @@ class SelfAttentionLSTM_GNN(torch.nn.Module):
             "feature" means the gating mechanism happens at the level of
             individual features.
     """
-    def __init__(self, B, K, Fmem, nheads, gating="slot"):
+    def __init__(self, B, K, Fin, Fmem, nheads, gating="slot"):
         super().__init__()
 
         self.B = B
@@ -594,6 +594,8 @@ class SelfAttentionLSTM_GNN(torch.nn.Module):
             Fmem,
             nheads,
         )
+
+        self.input_proj = nn.Linear(Fin, Fmem)
 
         if gating == "feature":
             self.proj = nn.Linear(2 * Fmem, 4 * Fmem)
@@ -657,6 +659,7 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
     Arguments:
         - B: batch size, must be specified in advance;
         - K: number of memory slots;
+        - Fin: number of input features;
         - Fmem: number of features of each slot;
         - nheads: number of heads in the self-attention mechanism;
         - gating: can one of "slot" or "feature".
@@ -665,14 +668,8 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
             "feature" means the gating mechanism happens at the level of
             individual features.
     """
-    def __init__(
-            self,
-            B,
-            K,
-            Fmem,
-            nheads,
-            gating="slot",
-            device=torch.device('cpu')):
+    def __init__(self, B, K, Fin, Fmem, nheads, gating="slot",
+                 device=torch.device('cpu')):
 
         super().__init__()
 
@@ -684,10 +681,14 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
 
         self.device = device
 
-        self.self_attention = TransformerBlockSparse(
-            Fmem,
-            nheads,
-        )
+        # transformer block
+        # expressed component-wise for avoiding redundent compute
+        self.norm1 = torch.nn.LayerNorm([Fmem])
+        self.norm2 = torch.nn.LayerNorm([Fmem])
+        self.mhsa = SelfAttentionLayerSparse(Fmem, Fmem, Fmem, nheads)
+        self.mlp = MLP([Fmem, Fmem, Fmem])
+
+        self.input_proj = nn.Linear(Fin, Fmem)
 
         if gating == "feature":
             self.proj = nn.Linear(2 * Fmem, 4 * Fmem)
@@ -697,7 +698,7 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
 
-        C, Cbatch, H, Hbatch = self._mem_init()
+        C, Cbatch, H = self._mem_init()
         self.register_buffer('C', C)
         self.register_buffer('Cbatch', Cbatch)
         self.register_buffer('H', H)
@@ -711,13 +712,15 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
         
         C = torch.cat([
             eyeflatten,
-            torch.zeros(self.B * self.K, self.Fmem * self.nheads - self.K)])
+            torch.zeros(self.B * self.K, self.Fmem - self.K)],
+            -1)
         Cbatch = torch.arange(self.B).expand(self.K, self.B)
         Cbatch = Cbatch.transpose(0, 1).flatten()
 
         H = torch.cat([
             eyeflatten,
-            torch.zeros(self.B * self.K, self.Fmem * self.nheads - self.K)])
+            torch.zeros(self.B * self.K, self.Fmem - self.K)],
+            -1)
         # we don't compute a batch index tensor for H because it is always the
         # same as the one for C
 
@@ -730,16 +733,24 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
         # attention computation
         C_cat = torch.cat([self.C, x], 0)
         batch_cat = torch.cat([self.Cbatch, xbatch], 0)
-        ei_cat = utils.get_all_ei(self.Cbatch, xbatch)
+        ei_cat = utils.get_ei_from(self.Cbatch, xbatch)
+
+        print(batch_cat)
+        print(ei_cat)
         
         # input to the slot-LSTM
-        X = self.self_attention(C_cat, batch_cat, ei_cat)
-        # exclude things that are not in memory
-        X = X[:(self.b * self.N)]
+
+        # transformer block
+        X = self.mhsa(C_cat, batch_cat, ei_cat)
+        X = self.norm1(self.C + X)
+        Ctilde = self.mlp(X)
+        Ctilde = self.norm2(X + Ctilde)
+
+        print(Ctilde.shape)
 
         # compute forget, input and output gates
         # TODO: check if all these vectors are aligned
-        HX = torch.cat([self.H, X], -1)
+        HX = torch.cat([self.H, Ctilde], -1)
         f, i, o, Ctilde = self.proj(HX).chunk(4, -1)
 
         # note: no tanh in content update and output
@@ -834,7 +845,49 @@ sal.proj.weight = ssal.proj.weight
 res = ssal(x, batch, ei)
 res2 = sal(xb).reshape(4, 100)
 
-# test dense RMC implem
+print("test self-attention layer")
+print(f"Largest discrepancy between results {(res - res2).abs().max()}")
+
+# test full dense transformer against sparse version
+
+T = TransformerBlock(100, 2)
+T.mhsa = sal
+
+Ts = TransformerBlockSparse(100, 2)
+Ts.mhsa = ssal
+Ts.norm1 = T.norm1
+Ts.norm2 = T.norm2
+Ts.mlp = T.mlp
+
+res = Ts(x, batch, ei)
+res2 = T(xb).view(-1, 100)
+
+print()
+print("test transformer layer")
+print(f"Largest discrepancy between results {(res - res2).abs().max()}")
+
+# test dense memory vs sparse version
+
+M = SelfAttentionLSTM_GNN(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+Ms = SelfAttentionLSTM_GNN_Sparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+
+Ms.input_proj = M.input_proj
+Ms.proj = M.proj
+M.self_attention.mhsa = sal
+Ms.mhsa = ssal
+Ms.norm1 = M.self_attention.norm1
+Ms.norm2 = M.self_attention.norm2
+Ms.mlp = M.self_attention.mlp
+
+print()
+print("test memory modules")
+print("Largest initial memory discrepancy: "
+      f"{(Ms.C - M.C.view(-1, 100)).abs().max()}")
+
+res = Ms(x, batch)
+res2 = M(xb).view(-1, 100)
+
+print(f"Largest result discrepancy: {(res - res2).abs().max()}")
 
 # rmc = RMC(4, 10, 2, 2)
 # rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)

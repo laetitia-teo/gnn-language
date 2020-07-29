@@ -196,6 +196,47 @@ def get_all_ei(batch1,
 
     return ei
 
+def get_ei_from(batch1,
+                batch2,
+                self_edges=True,
+                bi_directed=True,
+                device=torch.device('cpu')):
+    """
+    Used in memory module, only keep queries from first input.
+    """
+    if not isinstance(batch1, torch.Tensor):
+        batch1 = torch.tensor(batch1)
+    if not isinstance(batch2, torch.Tensor):
+        batch2 = torch.tensor(batch2)
+
+    N = len(batch1)
+    M = len(batch2)
+
+    # get numbers of objects for both batch tensors
+    coo1 = coo_matrix((np.empty(N), (batch1.numpy(), np.arange(N))))
+    cum1 = coo1.tocsr().indptr
+    ni1 = cum1[1:] - cum1[:-1]
+
+    ei1 = torch.cat([complete_graph(n, self_edges) + cn \
+                     for n, cn in zip(ni1, cum1)], 1)
+
+    coo2 = coo_matrix((np.empty(M), (batch2.numpy(), np.arange(M))))
+    cum2 = coo2.tocsr().indptr
+    ni2 = cum2[1:] - cum2[:-1]
+
+    # get cross-graph edge index tensor
+    ei12 = torch.cat(
+        [complete_crossgraph(m, n, N, False) \
+            + torch.tensor([cm, cn]).view(2, 1) \
+            for n, m, cn, cm in zip(ni1, ni2, cum1, cum2)],
+        1,
+    ).flip(0)
+
+    ei = torch.cat([ei1, ei12], 1)
+    ei = ei.to(device)
+
+    return ei
+
 def get_graph(x, device=torch.device('cpu')):
     """
     Takes in a batch of babyai observations as input and outputs the nodes,
