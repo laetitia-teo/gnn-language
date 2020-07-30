@@ -554,7 +554,7 @@ class RMCSparse(torch.nn.Module):
 
 # Dense version
 
-class SelfAttentionLSTM_GNN(torch.nn.Module):
+class SlotMem(torch.nn.Module):
     """
     A GNN where the edge model + edge aggreg is a self-attention layer.
     There are K hidden states and cells, each corresponding to a particular
@@ -580,7 +580,7 @@ class SelfAttentionLSTM_GNN(torch.nn.Module):
             "feature" means the gating mechanism happens at the level of
             individual features.
     """
-    def __init__(self, B, K, Fin, Fmem, nheads, gating="slot"):
+    def __init__(self, B, K, Fin, Fmem, nheads, gating="feature"):
         super().__init__()
 
         self.B = B
@@ -598,55 +598,51 @@ class SelfAttentionLSTM_GNN(torch.nn.Module):
         self.input_proj = nn.Linear(Fin, Fmem)
 
         if gating == "feature":
-            self.proj = nn.Linear(2 * Fmem, 4 * Fmem)
+            self.proj = nn.Linear(2 * Fmem, 2 * Fmem)
         elif gating == "slot":
-            self.proj = nn.Linear(2 * Fmem, 4)
+            self.proj = nn.Linear(2 * Fmem, 2)
         else:
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
 
-        C, H = self._mem_init()
-        self.register_buffer('C', C)
-        self.register_buffer('H', H)
+        # self.register_buffer('C', C)
+        # self.register_buffer('H', H)
 
     def _mem_init(self):
         """
         Some form of initialization where the vectors are unique.
         """
-        C = torch.cat([
+        memory0 = torch.cat([
             torch.eye(self.K).expand([self.B, self.K, self.K]),
             torch.zeros([self.B, self.K, self.Fmem - self.K])
         ], -1)
-        H = torch.cat([
-            torch.eye(self.K).expand([self.B, self.K, self.K]),
-            torch.zeros([self.B, self.K, self.Fmem - self.K])
-        ], -1)
-        return C, H
+        return memory0
 
-    def forward(self, x):
+    def forward(self, x, memory):
+
+        # embed the input
+        x = self.input_proj(x)
 
         # add input vectors to perform self-attention
-        C_cat = torch.cat([self.C, x], 1)
-        # input to the slot-LSTM
-        X = self.self_attention(C_cat)[:, :self.K]
+        mem_cat = torch.cat([memory, x], 1)
+        # candidate input
+        mem_update = self.self_attention(mem_cat)[:, :self.K]
 
-        # compute forget, input and output gates
-        HX = torch.cat([self.H, X], -1)
-        f, i, o, Ctilde = self.proj(HX).chunk(4, -1)
+        # compute forget and input gates
+        f, i = self.proj(torch.cat([memory, mem_update], -1)).chunk(2, -1)
 
-        # note: no tanh in content update and output
-        C = self.C * torch.sigmoid(f) + Ctilde * torch.sigmoid(i)
-        H = C * torch.sigmoid(o)
+        # update memory
+        # this mechanism may be refined
+        memory = memory * torch.sigmoid(f) + mem_update * torch.sigmoid(i)
 
-        # register memories
-        self.register_buffer('C', C)
-        self.register_buffer('H', H)
+        # for now the output is the memory
+        output = memory
 
-        return H
+        return output, memory
 
 # Sparse version
 
-class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
+class SlotMemSparse(torch.nn.Module):
     """
     A GNN where the edge model + edge aggreg is a self-attention layer.
     There are K hidden states and cells, each corresponding to a particular
@@ -668,7 +664,7 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
             "feature" means the gating mechanism happens at the level of
             individual features.
     """
-    def __init__(self, B, K, Fin, Fmem, nheads, gating="slot",
+    def __init__(self, B, K, Fin, Fmem, nheads, gating="feature",
                  device=torch.device('cpu')):
 
         super().__init__()
@@ -691,17 +687,12 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
         self.input_proj = nn.Linear(Fin, Fmem)
 
         if gating == "feature":
-            self.proj = nn.Linear(2 * Fmem, 4 * Fmem)
+            self.proj = nn.Linear(2 * Fmem, 2 * Fmem)
         elif gating == "slot":
-            self.proj = nn.Linear(2 * Fmem, 4)
+            self.proj = nn.Linear(2 * Fmem, 2)
         else:
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
-
-        C, Cbatch, H = self._mem_init()
-        self.register_buffer('C', C)
-        self.register_buffer('Cbatch', Cbatch)
-        self.register_buffer('H', H)
 
     def _mem_init(self):
         """
@@ -710,60 +701,43 @@ class SelfAttentionLSTM_GNN_Sparse(torch.nn.Module):
         eye = torch.eye(self.K).expand([self.B, self.K, self.K])
         eyeflatten = eye.reshape(self.B * self.K, self.K)
         
-        C = torch.cat([
+        memory0 = torch.cat([
             eyeflatten,
             torch.zeros(self.B * self.K, self.Fmem - self.K)],
             -1)
-        Cbatch = torch.arange(self.B).expand(self.K, self.B)
-        Cbatch = Cbatch.transpose(0, 1).flatten()
+        mbatch = torch.arange(self.B).expand(self.K, self.B)
+        mbatch = mbatch.transpose(0, 1).flatten()
 
-        H = torch.cat([
-            eyeflatten,
-            torch.zeros(self.B * self.K, self.Fmem - self.K)],
-            -1)
-        # we don't compute a batch index tensor for H because it is always the
-        # same as the one for C
+        return memory0, mbatch
 
-        return C, Cbatch, H
+    def forward(self, x, memory, xbatch, mbatch):
 
-    def forward(self, x, xbatch):
+        x = self.input_proj(x)
 
         # add input vectors to perform self-attention
         # also compute the batch indices and the edge indices for the self-
         # attention computation
-        C_cat = torch.cat([self.C, x], 0)
-        batch_cat = torch.cat([self.Cbatch, xbatch], 0)
-        ei_cat = utils.get_ei_from(self.Cbatch, xbatch)
-
-        print(batch_cat)
-        print(ei_cat)
-        
-        # input to the slot-LSTM
+        mem_cat = torch.cat([memory, x], 0)
+        batch_cat = torch.cat([mbatch, xbatch], 0)
+        ei_cat = utils.get_ei_from(mbatch, xbatch)
 
         # transformer block
-        X = self.mhsa(C_cat, batch_cat, ei_cat)
-        X = self.norm1(self.C + X)
-        Ctilde = self.mlp(X)
-        Ctilde = self.norm2(X + Ctilde)
+        mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
+        mem_tmp = self.norm1(memory + mem_tmp)
+        mem_update = self.mlp(mem_tmp)
+        mem_update = self.norm2(mem_tmp + mem_update)
 
-        print(Ctilde.shape)
+        # compute forget and input gates
+        f, i = self.proj(torch.cat([memory, mem_update], -1)).chunk(2, -1)
 
-        # compute forget, input and output gates
-        # TODO: check if all these vectors are aligned
-        HX = torch.cat([self.H, Ctilde], -1)
-        f, i, o, Ctilde = self.proj(HX).chunk(4, -1)
+        # update memory
+        # this mechanism may be refined
+        memory = memory * torch.sigmoid(f) + mem_update * torch.sigmoid(i)
 
-        # note: no tanh in content update and output
-        C = self.C * torch.sigmoid(f) + Ctilde * torch.sigmoid(i)
-        H = C * torch.sigmoid(o)
+        # for now the output is the memory
+        output = memory
 
-        # register memories
-        self.register_buffer('C', C)
-        self.register_buffer('H', H)
-
-        return H
-
-
+        return output, memory
 
 #### Basic tests
 
@@ -868,8 +842,11 @@ print(f"Largest discrepancy between results {(res - res2).abs().max()}")
 
 # test dense memory vs sparse version
 
-M = SelfAttentionLSTM_GNN(B=2, K=4, Fin=100, Fmem=100, nheads=2)
-Ms = SelfAttentionLSTM_GNN_Sparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+M = SlotMem(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+Ms = SlotMemSparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+
+m0s, mbatch = Ms._mem_init()
+m0 = M._mem_init()
 
 Ms.input_proj = M.input_proj
 Ms.proj = M.proj
@@ -882,12 +859,13 @@ Ms.mlp = M.self_attention.mlp
 print()
 print("test memory modules")
 print("Largest initial memory discrepancy: "
-      f"{(Ms.C - M.C.view(-1, 100)).abs().max()}")
+      f"{(m0s - m0.view(-1, 100)).abs().max()}")
 
-res = Ms(x, batch)
-res2 = M(xb).view(-1, 100)
+res = Ms(x, m0s, batch, mbatch)[0]
+res2 = M(xb, m0)[0].view(-1, 100)
 
 print(f"Largest result discrepancy: {(res - res2).abs().max()}")
+
 
 # rmc = RMC(4, 10, 2, 2)
 # rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
