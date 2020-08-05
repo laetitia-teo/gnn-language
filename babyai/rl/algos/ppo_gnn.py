@@ -3,10 +3,10 @@ import torch
 import torch.nn.functional as F
 
 
-from babyai.rl.algos.base import BaseAlgo
+from babyai.rl.algos.base_gnn import BaseAlgo
 
 
-class PPOAlgo(BaseAlgo):
+class PPOAlgoGNN(BaseAlgo):
     """The class for the Proximal Policy Optimization algorithm
     ([Schulman et al., 2015](https://arxiv.org/abs/1707.06347))."""
 

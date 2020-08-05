@@ -19,7 +19,7 @@ import babyai
 import babyai.utils as utils
 import babyai.rl
 from babyai.arguments import ArgumentParser
-from babyai.model import ACModel
+from babyai.model_gnn import ACModelGNN
 from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
 
@@ -48,7 +48,8 @@ args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
 args.procs = 1
 args.frames_per_proc = 40
-
+args.memory_dim = (4,5)
+args.arch = 'gnn'
 # Generate environments
 envs = []
 for i in range(args.procs):
@@ -89,13 +90,11 @@ else:
 
 # Define actor-critic model
 acmodel = utils.load_model(args.model, raise_not_found=False)
-if acmodel is None:
-    if args.pretrained_model:
-        acmodel = utils.load_model(args.pretrained_model, raise_not_found=True)
-    else:
-        acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
-                          args.image_dim, args.memory_dim, args.instr_dim,
-                          not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
+
+
+acmodel = ACModelGNN(obss_preprocessor.obs_space, envs[0].action_space,
+                  args.image_dim, args.memory_dim, args.instr_dim,
+                  not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
 
 obss_preprocessor.vocab.save()
 utils.save_model(acmodel, args.model)
@@ -107,7 +106,7 @@ if torch.cuda.is_available():
 
 reshape_reward = lambda _0, _1, reward, _2: args.reward_scale * reward
 if args.algo == "ppo":
-    algo = babyai.rl.PPOAlgo(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.beta1, args.beta2,
+    algo = babyai.rl.PPOAlgoGNN(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.beta1, args.beta2,
                              args.gae_lambda,
                              args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
                              args.optim_eps, args.clip_eps, args.ppo_epochs, args.batch_size, obss_preprocessor,

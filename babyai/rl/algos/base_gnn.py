@@ -72,7 +72,6 @@ class BaseAlgo(ABC):
         self.num_procs = len(envs)
         self.num_frames = self.num_frames_per_proc * self.num_procs
 
-
         assert self.num_frames_per_proc % self.recurrence == 0
 
         # Initialize experience values
@@ -80,10 +79,12 @@ class BaseAlgo(ABC):
         shape = (self.num_frames_per_proc, self.num_procs)
 
         self.obs = self.env.reset()
-        self.obss = [None]*(shape[0])
+        self.obss = [None] * (shape[0])
 
-        self.memory = torch.zeros(shape[1], self.acmodel.memory_size, device=self.device)
-        self.memories = torch.zeros(*shape, self.acmodel.memory_size, device=self.device)
+        self.memory = torch.zeros(shape[1], self.acmodel.memory_size[0], self.acmodel.memory_size[1],
+                                  device=self.device)
+        self.memories = torch.zeros(*shape, self.acmodel.memory_size[0], self.acmodel.memory_size[1],
+                                    device=self.device)
 
         self.mask = torch.ones(shape[1], device=self.device)
         self.masks = torch.zeros(*shape, device=self.device)
@@ -194,9 +195,9 @@ class BaseAlgo(ABC):
             next_value = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))['value']
 
         for i in reversed(range(self.num_frames_per_proc)):
-            next_mask = self.masks[i+1] if i < self.num_frames_per_proc - 1 else self.mask
-            next_value = self.values[i+1] if i < self.num_frames_per_proc - 1 else next_value
-            next_advantage = self.advantages[i+1] if i < self.num_frames_per_proc - 1 else 0
+            next_mask = self.masks[i + 1] if i < self.num_frames_per_proc - 1 else self.mask
+            next_value = self.values[i + 1] if i < self.num_frames_per_proc - 1 else next_value
+            next_advantage = self.advantages[i + 1] if i < self.num_frames_per_proc - 1 else 0
 
             delta = self.rewards[i] + self.discount * next_value * next_mask - self.values[i]
             self.advantages[i] = delta + self.discount * self.gae_lambda * next_advantage * next_mask
