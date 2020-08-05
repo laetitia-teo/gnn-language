@@ -233,7 +233,7 @@ def get_ei_from(batch1,
     ).flip(0)
 
     ei = torch.cat([ei1, ei12], 1)
-    ei = ei.to(device)
+    ei = ei.to(device).type(torch.LongTensor)
 
     return ei
 
