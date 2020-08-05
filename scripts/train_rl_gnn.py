@@ -48,7 +48,6 @@ args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
 args.procs = 1
 args.frames_per_proc = 40
-# args.arch += 'gnn'
 
 # Generate environments
 envs = []

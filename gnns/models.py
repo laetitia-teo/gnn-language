@@ -739,134 +739,135 @@ class SlotMemSparse(torch.nn.Module):
 
         return output, memory
 
-#### Basic tests
+if __name__ == '__main__':
+    #### Basic tests
 
-# sal = SelfAttentionLayer(10, 10, 10, 2)
-# x = torch.rand(12, 7, 10)
-# res = sal(x)
-# print(res.shape)
+    # sal = SelfAttentionLayer(10, 10, 10, 2)
+    # x = torch.rand(12, 7, 10)
+    # res = sal(x)
+    # print(res.shape)
 
-# rmc = RMC(5, 13, 3, 7)
-# x = torch.rand(7, 5, 13*3)
-
-
-#### Test that our implem for multi-head self-attention gives the same results
-#    as the pytorch one
-
-seed = 0
-Fin = 512
-nheads = 8
-Fv = 512
-Fqk = 512
-
-torch.manual_seed(seed)
-
-sal = SelfAttentionLayer(
-    Fin=Fin,
-    Fqk=Fqk,
-    Fv=Fv,
-    nheads=nheads,
-)
-tsal = torch.nn.MultiheadAttention(
-    embed_dim=Fin,
-    num_heads=nheads,
-    bias=False,
-)
-
-tsal.in_proj_weight = sal.proj.weight
-# set out map to identity
-tsal.out_proj.weight = torch.nn.Parameter(torch.eye(Fv))
-
-X = torch.rand(128, 5, 512)
-Xt = X.transpose(0, 1)
-
-# res = F.multi_head_attention_forward()
-res1 = tsal(Xt, Xt, Xt)[0].transpose(0, 1)
-res2 = sal(X)
-
-resf = F.multi_head_attention_forward(
-    Xt,
-    Xt,
-    Xt,
-    Fin,
-    nheads,
-    sal.proj.weight,
-    None,
-    None,
-    None,
-    False,
-    0.,
-    torch.eye(512),
-    None)[0].transpose(0, 1)
-
-# sparse reduction ops testing 
-
-x = torch.rand(4, 10)
-xd = x.view(2, 2, 10)
-batch = torch.LongTensor([0, 0, 1, 1])
-
-# sparse self-attention layer testing
-
-x = torch.rand(4, 100)
-xb = x.reshape(2, 2, 100)
-batch = torch.LongTensor([0, 0, 1, 1])
-ei = torch.LongTensor([[0, 0, 1, 1, 2, 2, 3, 3],
-                       [0, 1, 0, 1, 2, 3, 2, 3]])
-ssal = SelfAttentionLayerSparse(Fin=100, Fqk=100, Fv=100, nheads=2)
-sal = SelfAttentionLayer(Fin=100, Fqk=100, Fv=100, nheads=2)
-sal.proj.weight = ssal.proj.weight
-
-res = ssal(x, batch, ei)
-res2 = sal(xb).reshape(4, 100)
-
-print("test self-attention layer")
-print(f"Largest discrepancy between results {(res - res2).abs().max()}")
-
-# test full dense transformer against sparse version
-
-T = TransformerBlock(100, 2)
-T.mhsa = sal
-
-Ts = TransformerBlockSparse(100, 2)
-Ts.mhsa = ssal
-Ts.norm1 = T.norm1
-Ts.norm2 = T.norm2
-Ts.mlp = T.mlp
-
-res = Ts(x, batch, ei)
-res2 = T(xb).view(-1, 100)
-
-print()
-print("test transformer layer")
-print(f"Largest discrepancy between results {(res - res2).abs().max()}")
-
-# test dense memory vs sparse version
-
-M = SlotMem(B=2, K=4, Fin=100, Fmem=100, nheads=2)
-Ms = SlotMemSparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
-
-m0s, mbatch = Ms._mem_init()
-m0 = M._mem_init()
-
-Ms.input_proj = M.input_proj
-Ms.proj = M.proj
-M.self_attention.mhsa = sal
-Ms.mhsa = ssal
-Ms.norm1 = M.self_attention.norm1
-Ms.norm2 = M.self_attention.norm2
-Ms.mlp = M.self_attention.mlp
-
-print()
-print("test memory modules")
-print("Largest initial memory discrepancy: "
-      f"{(m0s - m0.view(-1, 100)).abs().max()}")
-
-res = Ms(x, m0s, batch, mbatch)[0]
-res2 = M(xb, m0)[0].view(-1, 100)
-
-print(f"Largest result discrepancy: {(res - res2).abs().max()}")
+    # rmc = RMC(5, 13, 3, 7)
+    # x = torch.rand(7, 5, 13*3)
 
 
-# rmc = RMC(4, 10, 2, 2)
-# rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
-# x = torch.rand(2, 7, 20)
+    #### Test that our implem for multi-head self-attention gives the same results
+    #    as the pytorch one
+
+    seed = 0
+    Fin = 512
+    nheads = 8
+    Fv = 512
+    Fqk = 512
+
+    torch.manual_seed(seed)
+
+    sal = SelfAttentionLayer(
+        Fin=Fin,
+        Fqk=Fqk,
+        Fv=Fv,
+        nheads=nheads,
+    )
+    tsal = torch.nn.MultiheadAttention(
+        embed_dim=Fin,
+        num_heads=nheads,
+        bias=False,
+    )
+
+    tsal.in_proj_weight = sal.proj.weight
+    # set out map to identity
+    tsal.out_proj.weight = torch.nn.Parameter(torch.eye(Fv))
+
+    X = torch.rand(128, 5, 512)
+    Xt = X.transpose(0, 1)
+
+    # res = F.multi_head_attention_forward()
+    res1 = tsal(Xt, Xt, Xt)[0].transpose(0, 1)
+    res2 = sal(X)
+
+    resf = F.multi_head_attention_forward(
+        Xt,
+        Xt,
+        Xt,
+        Fin,
+        nheads,
+        sal.proj.weight,
+        None,
+        None,
+        None,
+        False,
+        0.,
+        torch.eye(512),
+        None)[0].transpose(0, 1)
+
+    # sparse reduction ops testing
+
+    x = torch.rand(4, 10)
+    xd = x.view(2, 2, 10)
+    batch = torch.LongTensor([0, 0, 1, 1])
+
+    # sparse self-attention layer testing
+
+    x = torch.rand(4, 100)
+    xb = x.reshape(2, 2, 100)
+    batch = torch.LongTensor([0, 0, 1, 1])
+    ei = torch.LongTensor([[0, 0, 1, 1, 2, 2, 3, 3],
+                           [0, 1, 0, 1, 2, 3, 2, 3]])
+    ssal = SelfAttentionLayerSparse(Fin=100, Fqk=100, Fv=100, nheads=2)
+    sal = SelfAttentionLayer(Fin=100, Fqk=100, Fv=100, nheads=2)
+    sal.proj.weight = ssal.proj.weight
+
+    res = ssal(x, batch, ei)
+    res2 = sal(xb).reshape(4, 100)
+
+    print("test self-attention layer")
+    print(f"Largest discrepancy between results {(res - res2).abs().max()}")
+
+    # test full dense transformer against sparse version
+
+    T = TransformerBlock(100, 2)
+    T.mhsa = sal
+
+    Ts = TransformerBlockSparse(100, 2)
+    Ts.mhsa = ssal
+    Ts.norm1 = T.norm1
+    Ts.norm2 = T.norm2
+    Ts.mlp = T.mlp
+
+    res = Ts(x, batch, ei)
+    res2 = T(xb).view(-1, 100)
+
+    print()
+    print("test transformer layer")
+    print(f"Largest discrepancy between results {(res - res2).abs().max()}")
+
+    # test dense memory vs sparse version
+
+    M = SlotMem(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+    Ms = SlotMemSparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+
+    m0s, mbatch = Ms._mem_init()
+    m0 = M._mem_init()
+
+    Ms.input_proj = M.input_proj
+    Ms.proj = M.proj
+    M.self_attention.mhsa = sal
+    Ms.mhsa = ssal
+    Ms.norm1 = M.self_attention.norm1
+    Ms.norm2 = M.self_attention.norm2
+    Ms.mlp = M.self_attention.mlp
+
+    print()
+    print("test memory modules")
+    print("Largest initial memory discrepancy: "
+          f"{(m0s - m0.view(-1, 100)).abs().max()}")
+
+    res = Ms(x, m0s, batch, mbatch)[0]
+    res2 = M(xb, m0)[0].view(-1, 100)
+
+    print(f"Largest result discrepancy: {(res - res2).abs().max()}")
+
+
+    # rmc = RMC(4, 10, 2, 2)
+    # rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
+    # x = torch.rand(2, 7, 20)

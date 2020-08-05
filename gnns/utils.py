@@ -249,6 +249,6 @@ def get_graph(x, device=torch.device('cpu')):
     # edges features are concatenatenations of node features for source
     # and destination nodes
     src, dest = ei
-    e = torch.cat([x[src], x[dest]], 1)
+    e = torch.cat([x[src.type(torch.IntTensor)], x[dest.type(torch.IntTensor)]], 1)
 
     return x, batch, ei, e
