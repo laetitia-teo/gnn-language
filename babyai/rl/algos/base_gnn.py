@@ -81,9 +81,9 @@ class BaseAlgo(ABC):
         self.obs = self.env.reset()
         self.obss = [None] * (shape[0])
 
-        self.memory = torch.zeros(shape[1], self.acmodel.memory_size[0], self.acmodel.memory_size[1],
+        self.memory = torch.zeros(shape[1]* self.acmodel.memory_size[0], self.acmodel.memory_size[1],
                                   device=self.device)
-        self.memories = torch.zeros(*shape, self.acmodel.memory_size[0], self.acmodel.memory_size[1],
+        self.memories = torch.zeros(shape[0], shape[1]*self.acmodel.memory_size[0], self.acmodel.memory_size[1],
                                     device=self.device)
 
         self.mask = torch.ones(shape[1], device=self.device)
@@ -133,13 +133,25 @@ class BaseAlgo(ABC):
             # Do one agent-environment interaction
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
+            # create mbatch
+            m_batch = torch.IntTensor([i for i in range(self.num_procs) for _ in range(self.memory.shape[0])])
+            obs_flat = preprocessed_obs.image[0]
+            obs_batch = preprocessed_obs.image[1]
+            #TODO add masks for memory
             with torch.no_grad():
-                model_results = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
+                model_results = self.acmodel(obs_flat, self.memory, obs_batch, m_batch)
                 dist = model_results['dist']
                 value = model_results['value']
                 memory = model_results['memory']
                 extra_predictions = model_results['extra_predictions']
-
+                print('_----------------_')
+                print(dist)
+                print(value.shape)
+                print(value)
+                print(memory.shape)
+                print(memory)
+                print(m_batch)
+                print('_----------------_')
             action = dist.sample()
 
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())

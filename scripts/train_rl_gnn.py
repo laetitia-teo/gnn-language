@@ -49,6 +49,7 @@ args.env = 'BabyAI-GoToRedBall-v0'
 args.procs = 1
 args.frames_per_proc = 40
 args.memory_dim = (4,5)
+args.image_dim = 5
 args.arch = 'gnn'
 # Generate environments
 envs = []

@@ -19,6 +19,19 @@ def initialize_parameters(m):
             m.bias.data.fill_(0)
 
 
+def scatter_sum(x, batch):
+    nbatches = batch[-1] + 1
+    nelems = len(batch)
+    fx = x.shape[-1]
+    i = torch.stack([batch, torch.arange(nelems).type(torch.LongTensor)])
+
+    st = torch.sparse.FloatTensor(
+        i,
+        x,
+        torch.Size([nbatches, nelems] + list(x.shape[1:])),
+    )
+    return torch.sparse.sum(st, dim=1).values()
+
 class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
                  image_dim=5, memory_dim=(4, 5), instr_dim=128,
@@ -71,34 +84,34 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         return self.memory_dim
 
     def forward(self, obs, memory, obs_batch, m_batch, instr_embedding=None):
-        if self.use_instr and instr_embedding is None:
-            instr_embedding = self._get_instr_embedding(obs.instr)
-        if self.use_instr and self.lang_model == "attgru":
-            # outputs: B x L x D
-            # memory: B x M
-            mask = (obs.instr != 0).float()
-            # The mask tensor has the same length as obs.instr, and
-            # thus can be both shorter and longer than instr_embedding.
-            # It can be longer if instr_embedding is computed
-            # for a subbatch of obs.instr.
-            # It can be shorter if obs.instr is a subbatch of
-            # the batch that instr_embeddings was computed for.
-            # Here, we make sure that mask and instr_embeddings
-            # have equal length along dimension 1.
-            mask = mask[:, :instr_embedding.shape[1]]
-            instr_embedding = instr_embedding[:, :mask.shape[1]]
+        # if self.use_instr and instr_embedding is None:
+        #     instr_embedding = self._get_instr_embedding(obs.instr)
+        # if self.use_instr and self.lang_model == "attgru":
+        #     # outputs: B x L x D
+        #     # memory: B x M
+        #     mask = (obs.instr != 0).float()
+        #     # The mask tensor has the same length as obs.instr, and
+        #     # thus can be both shorter and longer than instr_embedding.
+        #     # It can be longer if instr_embedding is computed
+        #     # for a subbatch of obs.instr.
+        #     # It can be shorter if obs.instr is a subbatch of
+        #     # the batch that instr_embeddings was computed for.
+        #     # Here, we make sure that mask and instr_embeddings
+        #     # have equal length along dimension 1.
+        #     mask = mask[:, :instr_embedding.shape[1]]
+        #     instr_embedding = instr_embedding[:, :mask.shape[1]]
+        #
+        #     keys = self.memory2key(memory)
+        #     pre_softmax = (keys[:, None, :] * instr_embedding).sum(2) + 1000 * mask
+        #     attention = F.softmax(pre_softmax, dim=1)
+        #     instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
 
-            keys = self.memory2key(memory)
-            pre_softmax = (keys[:, None, :] * instr_embedding).sum(2) + 1000 * mask
-            attention = F.softmax(pre_softmax, dim=1)
-            instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
-
-        output, memory = self.slot_memory_model(obs,memory, obs_batch, m_batch)
-
-        embedding = torch.sum(output)
-
-        if self.use_instr and not "filmcnn" in self.arch:
-            embedding = torch.cat((embedding, instr_embedding), dim=1)
+        output, memory = self.slot_memory_model(obs, memory, obs_batch, m_batch)
+        embedding = scatter_sum(output, m_batch.type(torch.LongTensor))
+        print(embedding)
+        print(embedding.shape)
+        # if self.use_instr and not "filmcnn" in self.arch:
+        #     embedding = torch.cat((embedding, instr_embedding), dim=1)
 
         if hasattr(self, 'aux_info') and self.aux_info:
             extra_predictions = {info: self.extra_heads[info](embedding) for info in self.extra_heads}
@@ -106,10 +119,10 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
             extra_predictions = dict()
 
         x = self.actor(embedding)
-        dist = Categorical(logits=F.log_softmax(x, dim=1))
+        dist = Categorical(logits=F.log_softmax(x))
 
         x = self.critic(embedding)
-        value = x.squeeze(1)
+        value = x
 
         return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
 

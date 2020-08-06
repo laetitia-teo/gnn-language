@@ -85,7 +85,7 @@ class PPOAlgoGNN(BaseAlgo):
                     sb = exps[inds + i]
 
                     # Compute loss
-
+                    # TODO create obs batch and mbatch
                     model_results = self.acmodel(sb.obs, memory * sb.mask)
                     dist = model_results['dist']
                     value = model_results['value']
