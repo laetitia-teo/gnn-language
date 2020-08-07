@@ -459,11 +459,11 @@ class RMCSparse(torch.nn.Module):
             eyeflatten,
             torch.zeros(b * N, d * h - N)])
 
-        Mbatch = torch.arange(b).expand(N, b).transpose(0, 1).flatten()
+        M_batch = torch.arange(b).expand(N, b).transpose(0, 1).flatten()
 
         # we dont need edge indices, we compute them at each time step (?)
         self.register_buffer('M', M)
-        self.register_buffer('Mbatch', Mbatch)
+        self.register_buffer('M_batch', M_batch)
 
         # modules
         self.self_attention = TransformerBlockSparse(d, h)
@@ -491,9 +491,9 @@ class RMCSparse(torch.nn.Module):
         Output is concatenation of the memory in the -1 dim.
         """
         M_cat = torch.cat([self.M, x], 0)
-        batch_cat = torch.cat([self.Mbatch, xbatch], 0)
+        batch_cat = torch.cat([self.M_batch, xbatch], 0)
         # TODO: only one-way attn between M and X, check it works
-        ei_cat = gnns.utils.get_all_ei(self.Mbatch, xbatch)
+        ei_cat = gnns.utils.get_all_ei(self.M_batch, xbatch)
 
         # TODO: check the following:
         #   - that it runs;
@@ -509,15 +509,15 @@ class RMCSparse(torch.nn.Module):
         LSTM recurrent pass.
         """
         M_cat = torch.cat([self.M, x], 0)
-        batch_cat = torch.cat([self.Mbatch, xbatch], 0)
-        ei_cat = gnns.utils.get_all_ei(self.Mbatch, xbatch)
+        batch_cat = torch.cat([self.M_batch, xbatch], 0)
+        ei_cat = gnns.utils.get_all_ei(self.M_batch, xbatch)
 
         Mtilde = self.self_attention(M_cat, batch_cat, ei_cat)
         Mtilde = Mtilde[:(self.b * self.N)]
 
         # for now we use sum
         # TODO: check validity of broadcasting according to M
-        x_sum = scatter_sum(x, xbatch)[self.Mbatch]
+        x_sum = scatter_sum(x, xbatch)[self.M_batch]
 
         f = self.Wf(x_sum) + self.Uf(self.M)
         i = self.Wi(x_sum) + self.Uf(self.M)
@@ -536,15 +536,15 @@ class RMCSparse(torch.nn.Module):
         LSTM recurrent pass, no output gate.
         """
         M_cat = torch.cat([self.M, x], 0)
-        batch_cat = torch.cat([self.Mbatch, xbatch], 0)
-        ei_cat = gnns.utils.get_all_ei(self.Mbatch, xbatch)
+        batch_cat = torch.cat([self.M_batch, xbatch], 0)
+        ei_cat = gnns.utils.get_all_ei(self.M_batch, xbatch)
 
         Mtilde = self.self_attention(M_cat, batch_cat, ei_cat)
         Mtilde = Mtilde[:(self.b * self.N)]
 
         # for now we use sum
         # TODO: check validity of broadcasting according to M
-        x_sum = scatter_sum(x, xbatch)[self.Mbatch]
+        x_sum = scatter_sum(x, xbatch)[self.M_batch]
 
         f = self.Wf(x_sum) + self.Uf(self.M)
         i = self.Wi(x_sum) + self.Uf(self.M)
@@ -724,12 +724,12 @@ class SlotMemSparse(torch.nn.Module):
             eyeflatten,
             torch.zeros(self.B * self.K, self.Fmem - self.K)],
             -1)
-        mbatch = torch.arange(self.B).expand(self.K, self.B)
-        mbatch = mbatch.transpose(0, 1).flatten()
+        m_batch = torch.arange(self.B).expand(self.K, self.B)
+        m_batch = m_batch.transpose(0, 1).flatten()
 
-        return memory0, mbatch
+        return memory0, m_batch
 
-    def forward(self, x, memory, xbatch, mbatch):
+    def forward(self, x, memory, xbatch, m_batch):
 
         x = self.input_proj(x)
 
@@ -737,8 +737,8 @@ class SlotMemSparse(torch.nn.Module):
         # also compute the batch indices and the edge indices for the self-
         # attention computation
         mem_cat = torch.cat([memory, x], 0)
-        batch_cat = torch.cat([mbatch, xbatch], 0)
-        ei_cat = gnns.utils.get_ei_from(mbatch, xbatch).type(torch.LongTensor)
+        batch_cat = torch.cat([m_batch, xbatch], 0)
+        ei_cat = gnns.utils.get_ei_from(m_batch, xbatch).type(torch.LongTensor)
 
         # transformer block
         mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
@@ -785,6 +785,7 @@ class SlotMemSparse2(torch.nn.Module):
                  device=torch.device('cpu')):
 
         super().__init__()
+
         self.K = K
         self.Fmem = Fmem
         self.nheads = nheads
@@ -809,7 +810,7 @@ class SlotMemSparse2(torch.nn.Module):
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
 
-    def forward(self, x, memory, xbatch, mbatch):
+    def forward(self, x, memory, xbatch, m_batch):
 
         x = self.input_proj(x)
 
@@ -817,8 +818,8 @@ class SlotMemSparse2(torch.nn.Module):
         # also compute the batch indices and the edge indices for the self-
         # attention computation
         mem_cat = torch.cat([memory, x], 0)
-        batch_cat = torch.cat([mbatch, xbatch], 0)
-        ei_cat = gnns.utils.get_ei_from(mbatch, xbatch)
+        batch_cat = torch.cat([m_batch, xbatch], 0)
+        ei_cat = gnns.utils.get_ei_from(m_batch, xbatch)
 
         # transformer block
         mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
@@ -838,6 +839,30 @@ class SlotMemSparse2(torch.nn.Module):
 
         return output, memory
 
+### Aggregator modules
+
+# These models operate on slotted memories to extract a single vector.
+# They can go from the simplest operation, summing memories slot-wise, to 
+# complex querying mechanisms with language information.
+
+class SumAggreg(nn.Module):
+    """
+    Simple sum of all slots.
+    """
+    def __init__(self):
+        super().__init__()
+
+    def language_init(self, language_seq):
+        pass
+
+    def forward(self, memory, m_batch):
+        return scatter_sum(memory, m_batch)
+
+# class QueryAggreg(nn.Module):
+#     """
+#     Attention-based query aggregation. In addition to the memories, takes a
+#     vector as input, and 
+#     """
 
 if __name__ == '__main__':
     #### Basic tests
@@ -945,7 +970,7 @@ if __name__ == '__main__':
     M = SlotMem(B=2, K=4, Fin=100, Fmem=100, nheads=2)
     Ms = SlotMemSparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
 
-    m0s, mbatch = Ms._mem_init()
+    m0s, m_batch = Ms._mem_init()
     m0 = M._mem_init()
 
     Ms.input_proj = M.input_proj
@@ -961,7 +986,7 @@ if __name__ == '__main__':
     print("Largest initial memory discrepancy: "
           f"{(m0s - m0.view(-1, 100)).abs().max()}")
 
-    res = Ms(x, m0s, batch, mbatch)[0]
+    res = Ms(x, m0s, batch, m_batch)[0]
     res2 = M(xb, m0)[0].view(-1, 100)
 
     print(f"Largest result discrepancy: {(res - res2).abs().max()}")
