@@ -10,6 +10,7 @@ import gnns.utils
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
+
 #### sparse reduction ops
 
 def scatter_sum(x, batch):
@@ -17,7 +18,7 @@ def scatter_sum(x, batch):
     nelems = len(batch)
     fx = x.shape[-1]
     i = torch.stack([batch, torch.arange(nelems)])
-    
+
     st = torch.sparse.FloatTensor(
         i,
         x,
@@ -25,20 +26,21 @@ def scatter_sum(x, batch):
     )
     return torch.sparse.sum(st, dim=1).values()
 
+
 def scatter_mean(x, batch):
     nbatches = batch[-1] + 1
     nelems = len(batch)
     fx = x.shape[-1]
     i = torch.stack([batch, torch.arange(nelems)])
-    
+
     st = torch.sparse.FloatTensor(
         i,
-        x, 
+        x,
         torch.Size([nbatches, nelems] + list(x.shape[1:])),
     )
     ost = torch.sparse.FloatTensor(
         i,
-        torch.ones(nelems), 
+        torch.ones(nelems),
         torch.Size([nbatches, nelems]),
     )
     xsum = torch.sparse.sum(st, dim=1).values()
@@ -46,6 +48,7 @@ def scatter_mean(x, batch):
     nx = torch.sparse.sum(ost, dim=1).values().view([-1, 1])
     print(nx.shape)
     return xsum / nx
+
 
 def scatter_softmax(x, batch):
     """
@@ -56,7 +59,7 @@ def scatter_softmax(x, batch):
     nelems = len(batch)
     fx = x.shape[-1]
     i = torch.stack([batch, torch.arange(nelems)])
-    
+
     # substract max for numerical stability
     xm = x.max(0).values
     x = x - xm
@@ -69,6 +72,7 @@ def scatter_softmax(x, batch):
     )
     expsum = torch.sparse.sum(st, dim=1).values()[batch]
     return exp / expsum
+
 
 #### ReLU MLP
 
@@ -90,6 +94,7 @@ class MLP(torch.nn.Module):
     def forward(self, x):
         return self.net(x)
 
+
 #### MHSA and Transformer
 
 class SelfAttentionLayer(torch.nn.Module):
@@ -101,25 +106,25 @@ class SelfAttentionLayer(torch.nn.Module):
         - batch: an index tensor giving the indices of the elements of x in
             minibatch.
     """
+
     def __init__(self, Fin, Fqk, Fv, nheads):
         super().__init__()
-        self.Fin = Fin # in features
-        self.Fqk = Fqk # features for dot product
-        self.Fv = Fv # features for values
+        self.Fin = Fin  # in features
+        self.Fqk = Fqk  # features for dot product
+        self.Fv = Fv  # features for values
         self.nheads = nheads
 
-        assert Fqk // nheads == Fqk / nheads, "self-attention features must "\
-            " be divisible by number of heads"
-        assert Fv // nheads == Fv / nheads, "value features must "\
-            " be divisible by number of heads"
+        assert Fqk // nheads == Fqk / nheads, "self-attention features must " \
+                                              " be divisible by number of heads"
+        assert Fv // nheads == Fv / nheads, "value features must " \
+                                            " be divisible by number of heads"
 
         # for now values have the same dim as keys and queries
-        self.Ftot = (2*Fqk + Fv)
+        self.Ftot = (2 * Fqk + Fv)
 
         self.proj = nn.Linear(Fin, self.Ftot, bias=False)
 
     def forward(self, x):
-
         B, N, _ = x.shape
         H = self.nheads
         Fh = self.Fqk // H
@@ -141,25 +146,27 @@ class SelfAttentionLayer(torch.nn.Module):
 
         return out
 
+
 class SelfAttentionLayerSparse(torch.nn.Module):
     """
     Sparse version of the above, for accepting batches with different
     numbers of objects.
     """
+
     def __init__(self, Fin, Fqk, Fv, nheads):
         super().__init__()
-        self.Fin = Fin # in features
-        self.Fqk = Fqk # features for dot product
-        self.Fv = Fv # features for values
+        self.Fin = Fin  # in features
+        self.Fqk = Fqk  # features for dot product
+        self.Fv = Fv  # features for values
         self.nheads = nheads
 
-        assert Fqk // nheads == Fqk / nheads, "self-attention features must "\
-            " be divisible by number of heads"
-        assert Fv // nheads == Fv / nheads, "value features must "\
-            " be divisible by number of heads"
+        assert Fqk // nheads == Fqk / nheads, "self-attention features must " \
+                                              " be divisible by number of heads"
+        assert Fv // nheads == Fv / nheads, "value features must " \
+                                            " be divisible by number of heads"
 
         # for now values have the same dim as keys and queries
-        self.Ftot = (2*Fqk + Fv)
+        self.Ftot = (2 * Fqk + Fv)
 
         self.proj = nn.Linear(Fin, self.Ftot, bias=False)
 
@@ -183,6 +190,8 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         k = k.reshape(-1, H, Fh)
         v = v.reshape(-1, H, Fhv)
 
+        print(src, dest)
+
         qs, ks, vs = q[src], k[dest], v[dest]
         # dot product
         aw = qs.view(-1, H, 1, Fh) @ ks.view(-1, H, Fh, 1)
@@ -196,6 +205,7 @@ class SelfAttentionLayerSparse(torch.nn.Module):
 
         return out
 
+
 class TransformerBlock(torch.nn.Module):
     """
     Implements a full Transformer block, with skip connexions, layernorm
@@ -205,6 +215,7 @@ class TransformerBlock(torch.nn.Module):
         - d: dimension of a head
         - h: number of heads
     """
+
     def __init__(self, d, h):
         super().__init__()
 
@@ -219,7 +230,6 @@ class TransformerBlock(torch.nn.Module):
         self.mlp = MLP([d, d, d])
 
     def forward(self, x):
-
         y = self.mhsa(x)
         y = self.norm1(x + y)
 
@@ -228,10 +238,12 @@ class TransformerBlock(torch.nn.Module):
 
         return z
 
+
 class TransformerBlockSparse(torch.nn.Module):
     """
     Sparse version of the above, different input format.
     """
+
     def __init__(self, d, h):
         super().__init__()
 
@@ -247,7 +259,6 @@ class TransformerBlockSparse(torch.nn.Module):
         self.mlp = MLP([d, d, d])
 
     def forward(self, x, batch, ei):
-
         y = self.mhsa(x, batch, ei)
         y = self.norm1(x + y)
 
@@ -255,6 +266,7 @@ class TransformerBlockSparse(torch.nn.Module):
         z = self.norm2(y + z)
 
         return z
+
 
 ### Base class for relational memory
 
@@ -268,8 +280,8 @@ class RelationalMemory(torch.nn.Module):
         - a _one_step method that outputs a tuple of (next_memory, output);
         - optionally, a _mem_init method that initializes the memory.
     """
-    def __init__(self, B, K, Fmem):
 
+    def __init__(self, B, K, Fmem):
         super().__init__()
         self.B = B
         self.K = K
@@ -302,6 +314,7 @@ class RelationalMemory(torch.nn.Module):
 
         return out
 
+
 #### Full Relational Memory Core
 
 class RMC(torch.nn.Module):
@@ -327,15 +340,15 @@ class RMC(torch.nn.Module):
                  mode='RNN',
                  device=torch.device('cpu')):
         super().__init__()
-        
-        self.N = N # number of slots
-        if Nx is None: 
-            self.Nx = N # number of slots for the input
+
+        self.N = N  # number of slots
+        if Nx is None:
+            self.Nx = N  # number of slots for the input
         else:
             self.Nx = Nx
-        self.d = d # dimension of a single head
-        self.h = h # number of heads
-        self.b = b # batch size
+        self.d = d  # dimension of a single head
+        self.h = h  # number of heads
+        self.b = b  # batch size
 
         self.device = device
         self.mode = mode
@@ -402,7 +415,7 @@ class RMC(torch.nn.Module):
         # LSTM recurrent pass, no output gate
         M_cat = torch.cat([self.M, x], 1)
         Mtilde = self.self_attention(M_cat)[:, :self.N]
-        
+
         x_cat = x.flatten(1).unsqueeze(1)
 
         f = self.Wf(x_cat) + self.Uf(self.M)
@@ -423,17 +436,19 @@ class RMC(torch.nn.Module):
         elif self.mode == 'LSTM_noout':
             return self._forwardLSTM_noout(x)
 
+
 class RMCSparse(torch.nn.Module):
     """
     Relational Memory Core, sparse version.
     """
+
     def __init__(self, N, d, h, b, mode='RNN', device=torch.device('cpu')):
         super().__init__()
-        
-        self.N = N # number of slots
-        self.d = d # dimension of a head
-        self.h = h # number of heads
-        self.b = b # batch size
+
+        self.N = N  # number of slots
+        self.d = d  # dimension of a head
+        self.h = h  # number of heads
+        self.b = b  # batch size
 
         self.device = device
 
@@ -485,7 +500,7 @@ class RMCSparse(torch.nn.Module):
         #   - that the indices selected are the good ones
         M = self.self_attention(M_cat, batch_cat, ei_cat)[:(self.b * self.N)]
         self.register_buffer('M', M)
-        
+
         out = M.reshape(self.b, self.N, self.d * self.h).view(self.b, -1)
         return out
 
@@ -550,6 +565,7 @@ class RMCSparse(torch.nn.Module):
         elif self.mode == 'LSTM_noout':
             return self._forwardLSTM_noout(x, batch)
 
+
 ### self-attention-LSTM GNN
 
 # Dense version
@@ -580,6 +596,7 @@ class SlotMem(torch.nn.Module):
             "feature" means the gating mechanism happens at the level of
             individual features.
     """
+
     def __init__(self, B, K, Fin, Fmem, nheads, gating="feature"):
         super().__init__()
 
@@ -640,6 +657,7 @@ class SlotMem(torch.nn.Module):
 
         return output, memory
 
+
 # Sparse version
 
 class SlotMemSparse(torch.nn.Module):
@@ -664,6 +682,7 @@ class SlotMemSparse(torch.nn.Module):
             "feature" means the gating mechanism happens at the level of
             individual features.
     """
+
     def __init__(self, B, K, Fin, Fmem, nheads, gating="feature",
                  device=torch.device('cpu')):
 
@@ -671,7 +690,7 @@ class SlotMemSparse(torch.nn.Module):
 
         self.B = B
         self.K = K
-        self.Fmem = Fmem 
+        self.Fmem = Fmem
         self.nheads = nheads
         self.gating = gating
 
@@ -700,7 +719,7 @@ class SlotMemSparse(torch.nn.Module):
         """
         eye = torch.eye(self.K).expand([self.B, self.K, self.K])
         eyeflatten = eye.reshape(self.B * self.K, self.K)
-        
+
         memory0 = torch.cat([
             eyeflatten,
             torch.zeros(self.B * self.K, self.Fmem - self.K)],
@@ -790,7 +809,6 @@ class SlotMemSparse2(torch.nn.Module):
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
 
-
     def forward(self, x, memory, xbatch, mbatch):
 
         x = self.input_proj(x)
@@ -831,7 +849,6 @@ if __name__ == '__main__':
 
     # rmc = RMC(5, 13, 3, 7)
     # x = torch.rand(7, 5, 13*3)
-
 
     #### Test that our implem for multi-head self-attention gives the same results
     #    as the pytorch one
@@ -948,7 +965,6 @@ if __name__ == '__main__':
     res2 = M(xb, m0)[0].view(-1, 100)
 
     print(f"Largest result discrepancy: {(res - res2).abs().max()}")
-
 
     # rmc = RMC(4, 10, 2, 2)
     # rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)

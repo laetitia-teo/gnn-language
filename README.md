@@ -30,3 +30,16 @@ La liste dynamique des choses à faire. Je laisse certains points qui ont étés
 --> Fixed it by putting ei = ei.to(device).type(torch.LongTensor) line 236 of gnns.utils
 3. Add to change torch.arange(nelems).type(torch.LongTensor)]) in line 6 of model_gnn (see with laetitia)
 4. Problem all memory slots have same value (look with laetitia)
+
+
+## Important design choices
+
+- Use previous action in update of memory lstm (The agent needs to know its orientation)
+- Init memory 
+- __Specialization mechanism__ in memory update to make memories diverge from same init (attention stochastique)
+- Language:
+	- aggreagtion
+	- update memory
+	- relational model
+	- do we use words or sentences as language atom. 
+

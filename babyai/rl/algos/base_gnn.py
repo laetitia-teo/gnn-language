@@ -80,10 +80,10 @@ class BaseAlgo(ABC):
 
         self.obs = self.env.reset()
         self.obss = [None] * (shape[0])
-
-        self.memory = torch.zeros(shape[1]* self.acmodel.memory_size[0], self.acmodel.memory_size[1],
+        # TODO change initialization of memories
+        self.memory = torch.zeros(shape[1] * self.acmodel.memory_size[0], self.acmodel.memory_size[1],
                                   device=self.device)
-        self.memories = torch.zeros(shape[0], shape[1]*self.acmodel.memory_size[0], self.acmodel.memory_size[1],
+        self.memories = torch.zeros(shape[0], shape[1] * self.acmodel.memory_size[0], self.acmodel.memory_size[1],
                                     device=self.device)
 
         self.mask = torch.ones(shape[1], device=self.device)
@@ -134,10 +134,12 @@ class BaseAlgo(ABC):
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
             # create mbatch
-            m_batch = torch.IntTensor([i for i in range(self.num_procs) for _ in range(self.memory.shape[0])])
+            m_batch = torch.IntTensor(
+                [i for i in range(self.num_procs) for _ in range(self.memory.shape[0] // self.num_procs)])
+            print(m_batch, m_batch.shape)
             obs_flat = preprocessed_obs.image[0]
             obs_batch = preprocessed_obs.image[1]
-            #TODO add masks for memory
+            # TODO add masks for memory
             with torch.no_grad():
                 model_results = self.acmodel(obs_flat, self.memory, obs_batch, m_batch)
                 dist = model_results['dist']
