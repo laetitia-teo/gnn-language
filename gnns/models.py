@@ -6,7 +6,8 @@ import torch.nn.functional as F
 import babyai
 import gym
 
-import gnns.utils
+# import gnns.utils
+import utils
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
@@ -493,7 +494,7 @@ class RMCSparse(torch.nn.Module):
         M_cat = torch.cat([self.M, x], 0)
         batch_cat = torch.cat([self.M_batch, xbatch], 0)
         # TODO: only one-way attn between M and X, check it works
-        ei_cat = gnns.utils.get_all_ei(self.M_batch, xbatch)
+        ei_cat = utils.get_all_ei(self.M_batch, xbatch)
 
         # TODO: check the following:
         #   - that it runs;
@@ -510,7 +511,7 @@ class RMCSparse(torch.nn.Module):
         """
         M_cat = torch.cat([self.M, x], 0)
         batch_cat = torch.cat([self.M_batch, xbatch], 0)
-        ei_cat = gnns.utils.get_all_ei(self.M_batch, xbatch)
+        ei_cat = utils.get_all_ei(self.M_batch, xbatch)
 
         Mtilde = self.self_attention(M_cat, batch_cat, ei_cat)
         Mtilde = Mtilde[:(self.b * self.N)]
@@ -537,7 +538,7 @@ class RMCSparse(torch.nn.Module):
         """
         M_cat = torch.cat([self.M, x], 0)
         batch_cat = torch.cat([self.M_batch, xbatch], 0)
-        ei_cat = gnns.utils.get_all_ei(self.M_batch, xbatch)
+        ei_cat = utils.get_all_ei(self.M_batch, xbatch)
 
         Mtilde = self.self_attention(M_cat, batch_cat, ei_cat)
         Mtilde = Mtilde[:(self.b * self.N)]
@@ -683,12 +684,12 @@ class SlotMemSparse(torch.nn.Module):
             individual features.
     """
 
-    def __init__(self, B, K, Fin, Fmem, nheads, gating="feature",
+    def __init__(self, K, Fin, Fmem, nheads, gating="feature",
                  device=torch.device('cpu')):
 
         super().__init__()
 
-        self.B = B
+        # self.B = B
         self.K = K
         self.Fmem = Fmem
         self.nheads = nheads
@@ -713,18 +714,20 @@ class SlotMemSparse(torch.nn.Module):
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
 
-    def _mem_init(self):
+    def _mem_init(self, B):
         """
         Some form of initialization where the vectors are unique.
+
+        B is batch size.
         """
-        eye = torch.eye(self.K).expand([self.B, self.K, self.K])
-        eyeflatten = eye.reshape(self.B * self.K, self.K)
+        eye = torch.eye(self.K).expand([B, self.K, self.K])
+        eyeflatten = eye.reshape(B * self.K, self.K)
 
         memory0 = torch.cat([
             eyeflatten,
-            torch.zeros(self.B * self.K, self.Fmem - self.K)],
+            torch.zeros(B * self.K, self.Fmem - self.K)],
             -1)
-        m_batch = torch.arange(self.B).expand(self.K, self.B)
+        m_batch = torch.arange(B).expand(self.K, B)
         m_batch = m_batch.transpose(0, 1).flatten()
 
         return memory0, m_batch
@@ -738,88 +741,7 @@ class SlotMemSparse(torch.nn.Module):
         # attention computation
         mem_cat = torch.cat([memory, x], 0)
         batch_cat = torch.cat([m_batch, xbatch], 0)
-        ei_cat = gnns.utils.get_ei_from(m_batch, xbatch).type(torch.LongTensor)
-
-        # transformer block
-        mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
-        mem_tmp = self.norm1(memory + mem_tmp)
-        mem_update = self.mlp(mem_tmp)
-        mem_update = self.norm2(mem_tmp + mem_update)
-
-        # compute forget and input gates
-        f, i = self.proj(torch.cat([memory, mem_update], -1)).chunk(2, -1)
-
-        # update memory
-        # this mechanism may be refined
-        memory = memory * torch.sigmoid(f) + mem_update * torch.sigmoid(i)
-
-        # for now the output is the memory
-        output = memory
-
-        return output, memory
-
-
-class SlotMemSparse2(torch.nn.Module):
-    """
-    A GNN where the edge model + edge aggreg is a self-attention layer.
-    There are K hidden states and cells, each corresponding to a particular
-    memory slot. The LSTM parameters are shared between all slots.
-
-    Sparse implementation, can deal with inputs of variable size.
-
-    The model only does one forward pass on the sequence.
-
-    Arguments:
-        - K: number of memory slots;
-        - Fin: number of input features;
-        - Fmem: number of features of each slot;
-        - nheads: number of heads in the self-attention mechanism;
-        - gating: can one of "slot" or "feature".
-            "slot" means the gating mechanism happens at the level of the whole
-            slot;
-            "feature" means the gating mechanism happens at the level of
-            individual features.
-    """
-
-    def __init__(self, K, Fin, Fmem, nheads, gating="feature",
-                 device=torch.device('cpu')):
-
-        super().__init__()
-
-        self.K = K
-        self.Fmem = Fmem
-        self.nheads = nheads
-        self.gating = gating
-
-        self.device = device
-
-        # transformer block
-        # expressed component-wise for avoiding redundent compute
-        self.norm1 = torch.nn.LayerNorm([Fmem])
-        self.norm2 = torch.nn.LayerNorm([Fmem])
-        self.mhsa = SelfAttentionLayerSparse(Fmem, Fmem, Fmem, nheads)
-        self.mlp = MLP([Fmem, Fmem, Fmem])
-
-        self.input_proj = nn.Linear(Fin, Fmem)
-
-        if gating == "feature":
-            self.proj = nn.Linear(2 * Fmem, 2 * Fmem)
-        elif gating == "slot":
-            self.proj = nn.Linear(2 * Fmem, 2)
-        else:
-            raise ValueError("the 'gating' argument must be one of:\n"
-                             "\t- 'slot'\n\t- 'feature'")
-
-    def forward(self, x, memory, xbatch, m_batch):
-
-        x = self.input_proj(x)
-
-        # add input vectors to perform self-attention
-        # also compute the batch indices and the edge indices for the self-
-        # attention computation
-        mem_cat = torch.cat([memory, x], 0)
-        batch_cat = torch.cat([m_batch, xbatch], 0)
-        ei_cat = gnns.utils.get_ei_from(m_batch, xbatch)
+        ei_cat = utils.get_ei_from(m_batch, xbatch).type(torch.LongTensor)
 
         # transformer block
         mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
@@ -858,11 +780,91 @@ class SumAggreg(nn.Module):
     def forward(self, memory, m_batch):
         return scatter_sum(memory, m_batch)
 
-# class QueryAggreg(nn.Module):
-#     """
-#     Attention-based query aggregation. In addition to the memories, takes a
-#     vector as input, and 
-#     """
+class QueryAggreg(nn.Module):
+    """
+    Attention-based query aggregation. In addition to the memories, takes a
+    vector as input, and performs attention-weighted aggrgation on the
+    memoriy slots.
+
+    Variant: Transformer block instead of simple self-attention.
+
+    Arguments:
+        - F: number of features for the self-attention;
+        - nheads: number of heads for the self-attention.
+    """
+    def __init__(self, Fmem, nheads):
+        super().__init__()
+
+        self.self_attention = SelfAttentionLayerSparse(Fmem, Fmem,
+                                                       Fmem, nheads)
+
+    def language_init(self, language_seq):
+        pass
+
+    def forward(self, memory, m_batch, query, q_batch):
+        ei = utils.get_ei_from(q_batch, m_batch)
+
+        x = torch.cat([query, memory], 0)
+        batch = torch.cat([q_batch, m_batch], 0)
+
+        queried = self.self_attention(x, batch, ei).squeeze()
+
+        return queried
+
+class LanguageQueryAggreg(nn.Module):
+    """
+    Initializes an internal vector from a language instruction, with an LSTM,
+    and uses this persistent representation to query the memory with an
+    attention mechanism.
+
+    Arguments:
+        - F_hidden: number of features for the self-attention/LSTM hidden 
+            state;
+        - nheads: number of heads for the self-attention;
+        - Flang: number of features for language tokens.
+    """
+    def __init__(self, F_hidden, nheads, F_lang):
+        super().__init__()
+
+        self.F_hidden = F_hidden
+        self.F_lang = F_lang
+
+        print(F_lang)
+
+        self.lstm = nn.LSTM(F_lang, self.F_hidden, 1)
+        self.self_attention = SelfAttentionLayerSparse(F_hidden, F_hidden,
+                                                       F_hidden, nheads)
+
+    def language_init(self, lang_seq):
+        S, B, F = lang_seq.shape
+        
+        h0 = torch.zeros(1, B, self.F_hidden)
+        c0 = torch.zeros(1, B, self.F_hidden)
+
+        out, (hn, cn) = self.lstm(lang_seq, (h0, c0))
+
+        self.register_buffer('language_vec', hn.squeeze())
+
+        return hn
+
+    def forward(self, memory, m_batch):
+        B = m_batch[-1] + 1
+
+        # generate batch tensor for language queries
+        q_batch = torch.arange(B)
+        # expand language vector
+        query = self.language_vec
+
+        ei = utils.get_ei_from(q_batch, m_batch)
+
+        x = torch.cat([query, memory], 0)
+        batch = torch.cat([q_batch, m_batch], 0)
+
+        queried = self.self_attention(x, batch, ei).squeeze()
+
+        return queried
+
+# TODO: use all tokens in input sentence separately
 
 if __name__ == '__main__':
     #### Basic tests
@@ -964,13 +966,13 @@ if __name__ == '__main__':
     print()
     print("test transformer layer")
     print(f"Largest discrepancy between results {(res - res2).abs().max()}")
-    #
-    # # test dense memory vs sparse version
+    
+    # test dense memory vs sparse version
 
     M = SlotMem(B=2, K=4, Fin=100, Fmem=100, nheads=2)
-    Ms = SlotMemSparse(B=2, K=4, Fin=100, Fmem=100, nheads=2)
+    Ms = SlotMemSparse(K=4, Fin=100, Fmem=100, nheads=2)
 
-    m0s, m_batch = Ms._mem_init()
+    m0s, m_batch = Ms._mem_init(2)
     m0 = M._mem_init()
 
     Ms.input_proj = M.input_proj
@@ -994,3 +996,45 @@ if __name__ == '__main__':
     # rmc = RMC(4, 10, 2, 2)
     # rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
     # x = torch.rand(2, 7, 20)
+    
+    ### Test aggreg modules
+
+    # this corrsponds to a complete pipeline
+
+    fx = 7
+    nslots = 13
+    b = 5
+    fmem = 17
+    nheads = 1
+    seq_len = 3
+
+    # mems
+
+    Mem = SlotMemSparse(K=nslots, Fin=fx, Fmem=fmem, nheads=nheads)
+    m0, m_batch = Mem._mem_init(b)
+
+    # aggregs
+
+    sa = SumAggreg()
+    qa = QueryAggreg(fmem, nheads)
+    lqa = LanguageQueryAggreg(fmem, nheads, fx)
+
+    seq = torch.rand(seq_len, b, fx)
+    x = torch.rand(b * nslots, fx)
+    x_batch = utils.create_batch_tensor(b, nslots)
+    
+    # query vectors
+    q = torch.rand(b, fmem)
+    q_batch = torch.arange(b)
+
+    # initialize language query aggregator
+    lqa.language_init(seq)
+
+    _, memory = Mem(x, m0, x_batch, m_batch)
+    res1 = sa(memory, m_batch)
+    res2 = qa(memory, m_batch, q, q_batch)
+    res3 = lqa(memory, m_batch)
+
+    print(f"res1 shape: {res1.shape}")
+    print(f"res2 shape: {res2.shape}")
+    print(f"res3 shape: {res3.shape}")

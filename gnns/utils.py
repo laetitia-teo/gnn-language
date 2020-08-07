@@ -16,6 +16,7 @@ obs, _, _, _ = env.step(env.action_space.sample())
 z = obs['image']
 X = np.stack([x, y, z], 0)
 
+### babyai utils
 
 def get_entities(x, device=torch.device('cpu')):
     """
@@ -52,6 +53,15 @@ def get_entities(x, device=torch.device('cpu')):
     x = x.to(device)
     batch = batch.int().to(device)[:, 0]
     return x, batch
+
+### batch index creation utils
+
+def create_batch_tensor(B, n):
+    # B is number of batches
+    # n is number of slots per batch
+    return torch.arange(B).unsqueeze(1).expand(B, n).flatten()
+
+### edge index creation utils
 
 def complete_graph(n, self_edges=False):
     """
@@ -202,7 +212,15 @@ def get_ei_from(batch1,
                 bi_directed=True,
                 device=torch.device('cpu')):
     """
-    Used in memory module, only keep queries from first input.
+    Computes the edge indices:
+        - from tokens in batch1 to themselves;
+        - from tokens in batch1 to tokens in batch2.
+
+    Note that we do not compute edge indices from tokens in batch2 to 
+    themselves or to tokens in batch1.
+
+    Used with a sparse self-attention layer, this means the objects in batch1
+    attend to themselves and to tokens in batch2, bit not the other way around.
     """
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
