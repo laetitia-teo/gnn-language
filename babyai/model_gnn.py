@@ -108,8 +108,7 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
 
         output, memory = self.slot_memory_model(obs, memory, obs_batch, m_batch)
         embedding = scatter_sum(output, m_batch.type(torch.LongTensor))
-        print(embedding)
-        print(embedding.shape)
+
         # if self.use_instr and not "filmcnn" in self.arch:
         #     embedding = torch.cat((embedding, instr_embedding), dim=1)
 
