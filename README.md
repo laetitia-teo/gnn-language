@@ -37,6 +37,7 @@ La liste dynamique des choses à faire. Je laisse certains points qui ont étés
 - Use previous action in update of memory lstm (The agent needs to know its orientation)
 - Init memory 
 - __Specialization mechanism__ in memory update to make memories diverge from same init (attention stochastique)
+- Think about scene invariance with respect to agent's orientation ("orientation is decoupled from object positions in allocentric frame")
 - Language:
 	- aggreagtion
 	- update memory
