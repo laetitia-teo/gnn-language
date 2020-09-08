@@ -191,7 +191,7 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         k = k.reshape(-1, H, Fh)
         v = v.reshape(-1, H, Fhv)
 
-        print(src, dest)
+        # print(src, dest)
 
         qs, ks, vs = q[src], k[dest], v[dest]
         # dot product

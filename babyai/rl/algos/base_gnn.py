@@ -85,7 +85,8 @@ class BaseAlgo(ABC):
                                   device=self.device)
         self.memories = torch.zeros(shape[0], shape[1] * self.acmodel.memory_size[0], self.acmodel.memory_size[1],
                                     device=self.device)
-
+        self.m_batch = torch.IntTensor(
+            [i for i in range(self.num_procs) for _ in range(self.memory.shape[0] // self.num_procs)])
         self.mask = torch.ones(shape[1] * self.acmodel.memory_size[0], device=self.device)
         self.masks = torch.zeros(shape[0], shape[1] * self.acmodel.memory_size[0], device=self.device)
         self.actions = torch.zeros(*shape, device=self.device, dtype=torch.int)
@@ -133,20 +134,17 @@ class BaseAlgo(ABC):
             # Do one agent-environment interaction
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
-            # create mbatch
-            m_batch = torch.IntTensor(
-                [i for i in range(self.num_procs) for _ in range(self.memory.shape[0] // self.num_procs)])
 
             obs_flat = preprocessed_obs.image[0]
             obs_batch = preprocessed_obs.image[1]
             # TODO add masks for memory
             with torch.no_grad():
-                model_results = self.acmodel(obs_flat, self.mask.unsqueeze(1)*self.memory, obs_batch, m_batch)
+                model_results = self.acmodel(obs_flat, self.mask.unsqueeze(1) * self.memory, obs_batch, self.m_batch)
                 dist = model_results['dist']
                 value = model_results['value'].flatten()
                 memory = model_results['memory']
                 extra_predictions = model_results['extra_predictions']
-
+            print(dist)
             action = dist.sample()
 
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())
@@ -165,7 +163,7 @@ class BaseAlgo(ABC):
             self.masks[i] = self.mask
             done_as_int = torch.tensor(done, device=self.device, dtype=torch.float).unsqueeze(1)
             self.mask = 1 - done_as_int.expand(done_as_int.shape[0], self.acmodel.memory_size[0]).flatten()
-            
+
             self.actions[i] = action
             self.values[i] = value
             if self.reshape_reward is not None:
@@ -193,21 +191,28 @@ class BaseAlgo(ABC):
                     self.log_reshaped_return.append(self.log_episode_reshaped_return[i].item())
                     self.log_num_frames.append(self.log_episode_num_frames[i].item())
 
-            self.log_episode_return *= self.mask
-            self.log_episode_reshaped_return *= self.mask
-            self.log_episode_num_frames *= self.mask
+            episode_mask = torch.tensor([self.mask[i * self.acmodel.memory_size[0]] for i in range(self.num_procs)])
+            self.log_episode_return *= episode_mask
+            self.log_episode_reshaped_return *= episode_mask
+            self.log_episode_num_frames *= episode_mask
 
         # Add advantage and return to experiences
-
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
-            next_value = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))['value']
+            # TODO: Add split obs_flat, obs_batch in preprocess_obss ?
+            obs_flat = preprocessed_obs.image[0]
+            obs_batch = preprocessed_obs.image[1]
+            next_value = self.acmodel(obs_flat, self.mask.unsqueeze(1) * self.memory, obs_batch, self.m_batch)[
+                'value'].flatten()
 
         for i in reversed(range(self.num_frames_per_proc)):
-            next_mask = self.masks[i + 1] if i < self.num_frames_per_proc - 1 else self.mask
+            next_mask = torch.tensor([self.masks[i + 1][j * self.acmodel.memory_size[0]] for j in
+                                      range(self.num_procs)]) if i < self.num_frames_per_proc - 1 else torch.tensor(
+                [self.mask[j * self.acmodel.memory_size[0]] for j in
+                 range(self.num_procs)])
+
             next_value = self.values[i + 1] if i < self.num_frames_per_proc - 1 else next_value
             next_advantage = self.advantages[i + 1] if i < self.num_frames_per_proc - 1 else 0
-
             delta = self.rewards[i] + self.discount * next_value * next_mask - self.values[i]
             self.advantages[i] = delta + self.discount * self.gae_lambda * next_advantage * next_mask
 

@@ -47,6 +47,14 @@ class PPOAlgoGNN(BaseAlgo):
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         '''
 
+        print('------------')
+        print(len(exps.obs[0]))
+        print(exps.obs[1])
+        print(len(exps.obs.instr))
+        print('-------------')
+
+        # objs[torch.sum(torch.stack([idx == i for i in indices]), dim=0).nonzero().flatten()]
+
         for _ in range(self.epochs):
             # Initialize log values
 

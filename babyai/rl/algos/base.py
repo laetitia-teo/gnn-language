@@ -133,9 +133,6 @@ class BaseAlgo(ABC):
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
             with torch.no_grad():
-                if torch.sum(self.mask) < self.num_procs:
-                    print(done)
-                    print(self.memory * self.mask.unsqueeze(1))
                 model_results = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
                 dist = model_results['dist']
                 value = model_results['value']
@@ -159,7 +156,6 @@ class BaseAlgo(ABC):
 
             self.masks[i] = self.mask
             self.mask = 1 - torch.tensor(done, device=self.device, dtype=torch.float)
-            print(self.mask)
             self.actions[i] = action
             self.values[i] = value
             if self.reshape_reward is not None:
