@@ -20,7 +20,7 @@ def initialize_parameters(m):
 
 
 def scatter_sum(x, batch):
-    nbatches = batch[-1] + 1
+    nbatches = torch.max(batch).item() + 1
     nelems = len(batch)
     fx = x.shape[-1]
     i = torch.stack([batch, torch.arange(nelems).type(torch.LongTensor)])
@@ -107,6 +107,8 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         #     instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
 
         output, memory = self.slot_memory_model(obs, memory, obs_batch, m_batch)
+        print(output)
+        print(memory)
         embedding = scatter_sum(output, m_batch.type(torch.LongTensor))
 
         # if self.use_instr and not "filmcnn" in self.arch:
@@ -118,6 +120,7 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
             extra_predictions = dict()
 
         x = self.actor(embedding)
+        print(embedding)
         dist = Categorical(logits=F.log_softmax(x))
 
         x = self.critic(embedding)

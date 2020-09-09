@@ -226,7 +226,8 @@ def get_ei_from(batch1,
         batch1 = torch.tensor(batch1)
     if not isinstance(batch2, torch.Tensor):
         batch2 = torch.tensor(batch2)
-
+    # batch1 = torch.LongTensor([20, 20, 20, 20, 0, 0, 0, 0])
+    # batch2 = torch.LongTensor([20, 20, 0, 0, 0])
     N = len(batch1)
     M = len(batch2)
 

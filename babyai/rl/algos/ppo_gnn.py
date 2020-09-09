@@ -1,9 +1,10 @@
 import numpy
 import torch
+
 import torch.nn.functional as F
 
-
 from babyai.rl.algos.base_gnn import BaseAlgo
+from babyai.rl.utils import DictList
 
 
 class PPOAlgoGNN(BaseAlgo):
@@ -47,15 +48,10 @@ class PPOAlgoGNN(BaseAlgo):
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         '''
 
-        print('------------')
-        print(len(exps.obs[0]))
-        print(exps.obs[1])
-        print(len(exps.obs.instr))
-        print('-------------')
-
         # objs[torch.sum(torch.stack([idx == i for i in indices]), dim=0).nonzero().flatten()]
-
+        n = 0
         for _ in range(self.epochs):
+            n = n + 1
             # Initialize log values
 
             log_entropies = []
@@ -72,7 +68,7 @@ class PPOAlgoGNN(BaseAlgo):
             a sub-batch), but the position of each sub-batch in a batch and the position of each batch in the whole
             list of frames is random thanks to self._get_batches_starting_indexes().
             '''
-
+            # TODO: Remove for loop and do try catch
             for inds in self._get_batches_starting_indexes():
                 # inds is a numpy array of indices that correspond to the beginning of a sub-batch
                 # there are as many inds as there are batches
@@ -86,15 +82,42 @@ class PPOAlgoGNN(BaseAlgo):
 
                 # Initialize memory
 
-                memory = exps.memory[inds]
+                # Extract first memories
+                inds_mem = [item for sublist in [list(
+                    range(self.acmodel.memory_dim[0] * i, self.acmodel.memory_dim[0] * i + self.acmodel.memory_dim[0]))
+                    for i in inds] for
+                            item in sublist]
+                memory = exps.memory[inds_mem]
+
+                all_obs_inds = exps.obs[1].image
+                sb = DictList()
 
                 for i in range(self.recurrence):
-                    # Create a sub-batch of experience
-                    sb = exps[inds + i]
+
+                    # Extract scene level quantities:
+                    sb.action = exps.action[inds + i]
+                    sb.log_prob = exps.log_prob[inds + i]
+                    sb.advantage = exps.advantage[inds + i]
+                    sb.value = exps.value[inds + i]
+                    sb.returnn = exps.returnn[inds + i]
+
+                    m_batch = torch.IntTensor([j + i for j in inds for _ in range(self.acmodel.memory_dim[0])])
+
+                    # Extract subatch of observation and observation batch indices
+                    sb.obs = torch.zeros((0, self.acmodel.image_dim))
+                    sb.obs_batch = torch.zeros(0).int()
+                    for j in inds + i:
+                        idx_j = all_obs_inds == j
+                        sb.obs = torch.cat([sb.obs, exps.obs[0].image[idx_j]], dim=0)
+                        sb.obs_batch = torch.cat([sb.obs_batch, exps.obs[1].image[idx_j]], dim=0)
+
+                    # TODO rename obs[0] and obs[1] into obs.obs and obs.obs_batch
+
+                    # Reshape mask
+                    sb.mask = exps.mask[list(numpy.array(inds_mem) + self.acmodel.memory_dim[0] * (i))].flatten()
 
                     # Compute loss
-                    # TODO create obs batch and mbatch
-                    model_results = self.acmodel(sb.obs, memory * sb.mask)
+                    model_results = self.acmodel(sb.obs, sb.mask.unsqueeze(1) * memory, sb.obs_batch, m_batch)
                     dist = model_results['dist']
                     value = model_results['value']
                     memory = model_results['memory']
@@ -125,7 +148,8 @@ class PPOAlgoGNN(BaseAlgo):
                     # Update memories for next epoch
 
                     if i < self.recurrence - 1:
-                        exps.memory[inds + i + 1] = memory.detach()
+                        exps.memory[
+                            list(numpy.array(inds_mem) + self.acmodel.memory_dim[0] * (i + 1))] = memory.detach()
 
                 # Update batch values
 
@@ -139,7 +163,8 @@ class PPOAlgoGNN(BaseAlgo):
 
                 self.optimizer.zero_grad()
                 batch_loss.backward()
-                grad_norm = sum(p.grad.data.norm(2) ** 2 for p in self.acmodel.parameters() if p.grad is not None) ** 0.5
+                grad_norm = sum(
+                    p.grad.data.norm(2) ** 2 for p in self.acmodel.parameters() if p.grad is not None) ** 0.5
                 torch.nn.utils.clip_grad_norm_(self.acmodel.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
@@ -177,6 +202,6 @@ class PPOAlgoGNN(BaseAlgo):
         indexes = numpy.random.permutation(indexes)
 
         num_indexes = self.batch_size // self.recurrence
-        batches_starting_indexes = [indexes[i:i + num_indexes] for i in range(0, len(indexes), num_indexes)]
+        batches_starting_indexes = [numpy.sort(indexes[i:i + num_indexes]) for i in range(0, len(indexes), num_indexes)]
 
         return batches_starting_indexes
