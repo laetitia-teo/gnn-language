@@ -18,11 +18,13 @@ X = np.stack([x, y, z], 0)
 
 ### babyai utils
 
-def get_entities(x, device=torch.device('cpu')):
+def get_entities(x, device=None):
     """
     Transforms the input array x into a collection of objects.
     Expects a batch of observation arrays (4d) as a numpy array.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # x shape is Nx7x7x3
     N = x.shape[0]
     x = torch.tensor(x)
@@ -101,11 +103,14 @@ def complete_crossgraph(n, m, N, bi_directed=True):
 b1 = [0, 0, 0, 1, 1]
 b2 = [0, 0, 1, 1]
 
-def get_ei(batch, self_edges=True, device=torch.device('cpu')):
+def get_ei(batch, self_edges=True, device=None):
     """
     Given a batch index, returns the associated edge index tensor, for a
     fully-connected bi-directional graph with self-edges removed.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     if not isinstance(batch, torch.Tensor):
         batch = torch.tensor(batch)
 
@@ -126,10 +131,13 @@ def get_ei(batch, self_edges=True, device=torch.device('cpu')):
 def get_crossgraph_ei(batch1,
                       batch2,
                       bi_directed=True,
-                      device=torch.device('cpu')):
+                      device=None):
     """
     Get cross graph ei cross_graph edge index for two provided batchtensors.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
     if not isinstance(batch2, torch.Tensor):
@@ -161,13 +169,16 @@ def get_all_ei(batch1,
                batch2,
                self_edges=True,
                bi_directed=True,
-               device=torch.device('cpu')):
+               device=None):
     """
     Gets all eis (inter-graph, cross-graph) by combining the two previous
     functions.
 
     TODO: maybe there's a smarter way to compute this.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
     if not isinstance(batch2, torch.Tensor):
@@ -210,7 +221,7 @@ def get_ei_from(batch1,
                 batch2,
                 self_edges=True,
                 bi_directed=True,
-                device=torch.device('cpu')):
+                device=None):
     """
     Computes the edge indices:
         - from tokens in batch1 to themselves;
@@ -222,6 +233,9 @@ def get_ei_from(batch1,
     Used with a sparse self-attention layer, this means the objects in batch1
     attend to themselves and to tokens in batch2, bit not the other way around.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
     if not isinstance(batch2, torch.Tensor):
@@ -256,12 +270,15 @@ def get_ei_from(batch1,
 
     return ei
 
-def get_graph(x, device=torch.device('cpu')):
+def get_graph(x, device=None):
     """
     Takes in a batch of babyai observations as input and outputs the nodes,
     batch, edges, and edge indices corresponding to the underlying complete
     graph without self-edges.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     x, batch = get_entities(x, device)
     ei = get_ei(batch, device)
     
