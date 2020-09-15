@@ -6,8 +6,8 @@ import torch.nn.functional as F
 import babyai
 import gym
 
-# import gnns.utils
-import gnns.utils
+import gnns
+import gnns.utils as utils
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
@@ -742,6 +742,82 @@ class SlotMemSparse(torch.nn.Module):
         mem_cat = torch.cat([memory, x], 0)
         batch_cat = torch.cat([m_batch, xbatch], 0)
         ei_cat = utils.get_ei_from(m_batch, xbatch).type(torch.LongTensor)
+
+        # transformer block
+        mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
+        mem_tmp = self.norm1(memory + mem_tmp)
+        mem_update = self.mlp(mem_tmp)
+        mem_update = self.norm2(mem_tmp + mem_update)
+
+        # compute forget and input gates
+        f, i = self.proj(torch.cat([memory, mem_update], -1)).chunk(2, -1)
+
+        # update memory
+        # this mechanism may be refined
+        memory = memory * torch.sigmoid(f) + mem_update * torch.sigmoid(i)
+
+        # for now the output is the memory
+        output = memory
+
+        return output, memory
+
+class SlotMemSparse2(torch.nn.Module):
+    """
+    A GNN where the edge model + edge aggreg is a self-attention layer.
+    There are K hidden states and cells, each corresponding to a particular
+    memory slot. The LSTM parameters are shared between all slots.
+    Sparse implementation, can deal with inputs of variable size.
+    The model only does one forward pass on the sequence.
+    Arguments:
+        - K: number of memory slots;
+        - Fin: number of input features;
+        - Fmem: number of features of each slot;
+        - nheads: number of heads in the self-attention mechanism;
+        - gating: can one of "slot" or "feature".
+            "slot" means the gating mechanism happens at the level of the whole
+            slot;
+            "feature" means the gating mechanism happens at the level of
+            individual features.
+    """
+
+    def __init__(self, K, Fin, Fmem, nheads, gating="feature",
+                 device=torch.device('cpu')):
+
+        super().__init__()
+        self.K = K
+        self.Fmem = Fmem
+        self.nheads = nheads
+        self.gating = gating
+
+        self.device = device
+
+        # transformer block
+        # expressed component-wise for avoiding redundent compute
+        self.norm1 = torch.nn.LayerNorm([Fmem])
+        self.norm2 = torch.nn.LayerNorm([Fmem])
+        self.mhsa = SelfAttentionLayerSparse(Fmem, Fmem, Fmem, nheads)
+        self.mlp = MLP([Fmem, Fmem, Fmem])
+
+        self.input_proj = nn.Linear(Fin, Fmem)
+
+        if gating == "feature":
+            self.proj = nn.Linear(2 * Fmem, 2 * Fmem)
+        elif gating == "slot":
+            self.proj = nn.Linear(2 * Fmem, 2)
+        else:
+            raise ValueError("the 'gating' argument must be one of:\n"
+                             "\t- 'slot'\n\t- 'feature'")
+
+    def forward(self, x, memory, xbatch, mbatch):
+
+        x = self.input_proj(x)
+
+        # add input vectors to perform self-attention
+        # also compute the batch indices and the edge indices for the self-
+        # attention computation
+        mem_cat = torch.cat([memory, x], 0)
+        batch_cat = torch.cat([mbatch, xbatch], 0)
+        ei_cat = gnns.utils.get_ei_from(mbatch, xbatch)
 
         # transformer block
         mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)

@@ -144,7 +144,7 @@ class BaseAlgo(ABC):
                 value = model_results['value'].flatten()
                 memory = model_results['memory']
                 extra_predictions = model_results['extra_predictions']
-            print(dist)
+
             action = dist.sample()
 
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())
