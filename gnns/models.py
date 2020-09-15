@@ -65,7 +65,7 @@ def scatter_softmax(x, batch):
     xm = x.max(0).values
     x = x - xm
 
-    exp = x.exp()
+    exp = x.exp() + 1e-8
     st = torch.sparse.FloatTensor(
         i,
         exp,
