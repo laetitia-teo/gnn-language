@@ -46,11 +46,15 @@ parser.add_argument("--save-interval", type=int, default=50,
 
 args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
-args.procs = 2
+args.procs = 1
+print(args.seed)
 args.frames_per_proc = 40
 args.memory_dim = (4,512)
 args.image_dim = 5
 args.arch = 'gnn'
+
+utils.seed(args.seed)
+
 # Generate environments
 envs = []
 for i in range(args.procs):
@@ -119,7 +123,7 @@ else:
 # Thus, there starts to be a difference in the random state. If we want to avoid it, in order to make sure that
 # the results of supervised-loss-coef=0. and extra-binary-info=0 match, we need to reseed here.
 
-utils.seed(args.seed)
+
 
 # Restore training status
 

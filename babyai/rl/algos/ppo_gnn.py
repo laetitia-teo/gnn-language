@@ -117,6 +117,7 @@ class PPOAlgoGNN(BaseAlgo):
                     sb.mask = exps.mask[list(numpy.array(inds_mem) + self.acmodel.memory_dim[0] * (i))].flatten()
 
                     # Compute loss
+                    print('COMPUTING FOR UPDATE')
                     model_results = self.acmodel(sb.obs, sb.mask.unsqueeze(1) * memory, sb.obs_batch, m_batch)
                     dist = model_results['dist']
                     value = model_results['value']
