@@ -34,7 +34,7 @@ def scatter_sum(x, batch):
 
 class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
-                 image_dim=5, memory_dim=(4, 5), instr_dim=128,
+                 image_dim=5, memory_dim=(4, 8), instr_dim=128, nheads=1,
                  use_instr=False, lang_model="gru", use_memory=False, arch="cnn1",
                  aux_info=None):
         super().__init__()
@@ -42,7 +42,7 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         # Decide which components are enabled
         self.use_instr = use_instr
         self.use_memory = use_memory
-        self.arch = arch
+        # self.arch = arch
         self.lang_model = lang_model
         self.aux_info = aux_info
         self.image_dim = image_dim
@@ -50,8 +50,12 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         self.instr_dim = instr_dim
 
         self.obs_space = obs_space
-        self.slot_memory_model = SlotMemSparse2(K=self.memory_dim[0], Fin=self.image_dim, Fmem=self.memory_dim[1],
-                                                nheads=1)
+        self.slot_memory_model = SlotMemSparse2(
+            K=self.memory_dim[0],
+            Fin=self.image_dim,
+            Fmem=self.memory_dim[1],
+            nheads=nheads
+        )
         self.embedding_size = self.memory_dim[1]
         # Define actor's model
         self.actor = nn.Sequential(

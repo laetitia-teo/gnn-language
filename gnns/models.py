@@ -7,7 +7,7 @@ import babyai
 import gym
 
 # import gnns.utils
-import utils
+import gnns.utils
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
