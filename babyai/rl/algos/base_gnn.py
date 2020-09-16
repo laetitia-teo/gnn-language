@@ -87,6 +87,7 @@ class BaseAlgo(ABC):
                                     device=self.device)
         self.m_batch = torch.IntTensor(
             [i for i in range(self.num_procs) for _ in range(self.memory.shape[0] // self.num_procs)])
+        self.m_batch = self.m_batch.to(self.device)
         self.mask = torch.ones(shape[1] * self.acmodel.memory_size[0], device=self.device)
         self.masks = torch.zeros(shape[0], shape[1] * self.acmodel.memory_size[0], device=self.device)
         self.actions = torch.zeros(*shape, device=self.device, dtype=torch.int)
@@ -137,9 +138,19 @@ class BaseAlgo(ABC):
 
             obs_flat = preprocessed_obs.image[0]
             obs_batch = preprocessed_obs.image[1]
+
+            print(f"device: {obs_flat.device}")
+            print(f"memory: {self.memory}")
+            print(f"obs_flat: {obs_flat}")
+            print(f"m_batch: {self.m_batch}")
             # TODO add masks for memory
             with torch.no_grad():
-                model_results = self.acmodel(obs_flat, self.mask.unsqueeze(1) * self.memory, obs_batch, self.m_batch)
+                model_results = self.acmodel(
+                    obs_flat,
+                    self.mask.unsqueeze(1) * self.memory,
+                    obs_batch,
+                    self.m_batch
+                )
                 dist = model_results['dist']
                 value = model_results['value'].flatten()
                 memory = model_results['memory']

@@ -14,11 +14,16 @@ env = gym.make('BabyAI-GoToRedBall-v0')
 
 #### sparse reduction ops
 
-def scatter_sum(x, batch):
+def scatter_sum(x, batch, device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     nbatches = batch[-1] + 1
     nelems = len(batch)
     fx = x.shape[-1]
-    i = torch.stack([batch, torch.arange(nelems)])
+    i = torch.stack([batch, torch.arange(nelems, device=device)])
+
+    print(f"indices {i}")
 
     st = torch.sparse.FloatTensor(
         i,
@@ -28,11 +33,14 @@ def scatter_sum(x, batch):
     return torch.sparse.sum(st, dim=1).values()
 
 
-def scatter_mean(x, batch):
+def scatter_mean(x, batch, device=None):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     nbatches = batch[-1] + 1
     nelems = len(batch)
     fx = x.shape[-1]
-    i = torch.stack([batch, torch.arange(nelems)])
+    i = torch.stack([batch, torch.arange(nelems, device=device)])
 
     st = torch.sparse.FloatTensor(
         i,
@@ -51,15 +59,20 @@ def scatter_mean(x, batch):
     return xsum / nx
 
 
-def scatter_softmax(x, batch):
+def scatter_softmax(x, batch, device=None):
     """
     Computes the softmax-reduction of elements of x as given by the batch index
     tensor.
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     nbatches = batch[-1] + 1
     nelems = len(batch)
     fx = x.shape[-1]
-    i = torch.stack([batch, torch.arange(nelems)])
+    print(f"scatter softmax batch {batch}")
+
+    i = torch.stack([batch, torch.arange(nelems, device=device)])
 
     # substract max for numerical stability
     xm = x.max(0).values
@@ -807,6 +820,29 @@ class SlotMemSparse2(torch.nn.Module):
         else:
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
+
+    def _mem_init(self, B, device=None):
+        """
+        Some form of initialization where the vectors are unique.
+
+        B is batch size.
+        """
+        if device is None:
+            device = torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+
+        eye = torch.eye(self.K, device=device).expand([B, self.K, self.K])
+        eyeflatten = eye.reshape(B * self.K, self.K)
+
+        memory0 = torch.cat([
+            eyeflatten,
+            torch.zeros(B * self.K, self.Fmem - self.K, device=device)],
+            -1)
+        m_batch = torch.arange(B, device=device).expand(self.K, B)
+        m_batch = m_batch.transpose(0, 1).flatten()
+
+        return memory0, m_batch
 
     def forward(self, x, memory, xbatch, mbatch):
 
