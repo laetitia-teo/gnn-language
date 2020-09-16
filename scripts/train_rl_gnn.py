@@ -21,7 +21,7 @@ import babyai.rl
 from babyai.arguments import ArgumentParser
 from babyai.model_gnn import ACModelGNN
 from babyai.evaluate import batch_evaluate
-from babyai.utils.agent import ModelAgent
+from babyai.utils.agent import ModelAgentGNN
 
 # Parse arguments
 parser = ArgumentParser()
@@ -47,12 +47,12 @@ parser.add_argument("--save-interval", type=int, default=50,
 args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
 args.procs = 1
-print(args.seed)
 args.frames_per_proc = 40
-args.memory_dim = (4,512)
+args.memory_dim = (4, 5)
 args.image_dim = 5
 args.arch = 'gnn'
 
+args.save_interval = 2
 utils.seed(args.seed)
 
 # Generate environments
@@ -96,10 +96,9 @@ else:
 # Define actor-critic model
 acmodel = utils.load_model(args.model, raise_not_found=False)
 
-
 acmodel = ACModelGNN(obss_preprocessor.obs_space, envs[0].action_space,
-                  args.image_dim, args.memory_dim, args.instr_dim,
-                  not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
+                     args.image_dim, args.memory_dim, args.instr_dim,
+                     not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
 
 obss_preprocessor.vocab.save()
 utils.save_model(acmodel, args.model)
@@ -112,17 +111,16 @@ if torch.cuda.is_available():
 reshape_reward = lambda _0, _1, reward, _2: args.reward_scale * reward
 if args.algo == "ppo":
     algo = babyai.rl.PPOAlgoGNN(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.beta1, args.beta2,
-                             args.gae_lambda,
-                             args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
-                             args.optim_eps, args.clip_eps, args.ppo_epochs, args.batch_size, obss_preprocessor,
-                             reshape_reward)
+                                args.gae_lambda,
+                                args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
+                                args.optim_eps, args.clip_eps, args.ppo_epochs, args.batch_size, obss_preprocessor,
+                                reshape_reward)
 else:
     raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 
 # When using extra binary information, more tensors (model params) are initialized compared to when we don't use that.
 # Thus, there starts to be a difference in the random state. If we want to avoid it, in order to make sure that
 # the results of supervised-loss-coef=0. and extra-binary-info=0 match, we need to reseed here.
-
 
 
 # Restore training status
@@ -227,7 +225,7 @@ while status['num_frames'] < args.frames:
         csv_writer.writerow(data)
 
     # Save obss preprocessor vocabulary and model
-
+    print(status['i'])
     if args.save_interval > 0 and status['i'] % args.save_interval == 0:
         obss_preprocessor.vocab.save()
         with open(status_path, 'w') as dst:
@@ -235,7 +233,7 @@ while status['num_frames'] < args.frames:
             utils.save_model(acmodel, args.model)
 
         # Testing the model before saving
-        agent = ModelAgent(args.model, obss_preprocessor, argmax=True)
+        agent = ModelAgentGNN(args.model, obss_preprocessor, argmax=True)
         agent.model = acmodel
         agent.model.eval()
         logs = batch_evaluate(agent, test_env_name, args.val_seed, args.val_episodes)

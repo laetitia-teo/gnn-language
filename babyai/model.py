@@ -256,7 +256,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             extra_predictions = dict()
 
         x = self.actor(embedding)
-        print(x)
         dist = Categorical(logits=F.log_softmax(x, dim=1))
 
         x = self.critic(embedding)

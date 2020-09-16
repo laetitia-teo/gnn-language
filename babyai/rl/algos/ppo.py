@@ -64,12 +64,9 @@ class PPOAlgo(BaseAlgo):
             a sub-batch), but the position of each sub-batch in a batch and the position of each batch in the whole
             list of frames is random thanks to self._get_batches_starting_indexes().
             '''
-            print(self.batch_size)
-            print(self._get_batches_starting_indexes())
+
             for inds in self._get_batches_starting_indexes():
-                print('________')
-                print(inds)
-                print('________')
+
                 # inds is a numpy array of indices that correspond to the beginning of a sub-batch
                 # there are as many inds as there are batches
                 # Initialize batch values

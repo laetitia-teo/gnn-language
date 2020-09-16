@@ -273,8 +273,6 @@ def get_ei_from(batch1,
 
     ei = torch.cat([ei1, ei12], 1).long()
 
-    print(f"get ei from {ei}")
-
     return ei
 
 def get_graph(x, device=None):

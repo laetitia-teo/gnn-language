@@ -49,6 +49,7 @@ args.env = 'BabyAI-GoToRedBall-v0'
 args.procs = 2
 # args.batch_size = 20
 args.frames_per_proc = 400
+args.save_interval = 2
 # args.arch += 'gnn'
 
 # Generate environments
@@ -223,7 +224,7 @@ while status['num_frames'] < args.frames:
                 writer.add_scalar(key, float(value), status['num_frames'])
 
         csv_writer.writerow(data)
-
+    print(status['i'])
     # Save obss preprocessor vocabulary and model
 
     if args.save_interval > 0 and status['i'] % args.save_interval == 0:

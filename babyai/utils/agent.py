@@ -30,6 +30,64 @@ class Agent(ABC):
         pass
 
 
+class ModelAgentGNN(Agent):
+    """A model-based agent. This agent behaves using a model."""
+
+    def __init__(self, model_or_name, obss_preprocessor, argmax):
+        if obss_preprocessor is None:
+            assert isinstance(model_or_name, str)
+            obss_preprocessor = utils.ObssPreprocessor(model_or_name)
+        self.obss_preprocessor = obss_preprocessor
+        if isinstance(model_or_name, str):
+            self.model = utils.load_model(model_or_name)
+            if torch.cuda.is_available():
+                self.model.cuda()
+        else:
+            self.model = model_or_name
+        self.device = next(self.model.parameters()).device
+        self.argmax = argmax
+        self.memory = None
+
+    def act_batch(self, many_obs):
+        if self.memory is None:
+            self.memory = torch.zeros(len(many_obs) * self.model.memory_size[0], self.model.memory_size[1],
+                                      device=self.device)
+            self.m_batch = torch.IntTensor(
+                [i for i in range(len(many_obs)) for _ in range(self.model.memory_size[0])])
+        elif self.memory.shape[0] != self.model.memory_size[0] * len(many_obs):
+            raise ValueError("stick to one batch size for the lifetime of an agent")
+
+        preprocessed_obs = self.obss_preprocessor(many_obs, device=self.device)
+        obs_flat = preprocessed_obs.image[0]
+        obs_batch = preprocessed_obs.image[1]
+
+        with torch.no_grad():
+            model_results = self.model(obs_flat, self.memory, obs_batch, self.m_batch)
+            dist = model_results['dist']
+            value = model_results['value']
+            self.memory = model_results['memory']
+
+        if self.argmax:
+            action = dist.probs.argmax(1)
+        else:
+            action = dist.sample()
+
+        return {'action': action,
+                'dist': dist,
+                'value': value}
+
+    def act(self, obs):
+        return self.act_batch([obs])
+
+    def analyze_feedback(self, reward, done):
+        if isinstance(done, tuple):
+            for i in range(len(done)):
+                if done[i]:
+                    self.memory[i, :] *= 0.
+        else:
+            self.memory *= (1 - done)
+
+
 class ModelAgent(Agent):
     """A model-based agent. This agent behaves using a model."""
 
@@ -110,11 +168,11 @@ class DemoAgent(Agent):
 
     @staticmethod
     def check_obss_equality(obs1, obs2):
-        if not(obs1.keys() == obs2.keys()):
+        if not (obs1.keys() == obs2.keys()):
             return False
         for key in obs1.keys():
             if type(obs1[key]) in (str, int):
-                if not(obs1[key] == obs2[key]):
+                if not (obs1[key] == obs2[key]):
                     return False
             else:
                 if not (obs1[key] == obs2[key]).all():

@@ -23,8 +23,6 @@ def scatter_sum(x, batch, device=None):
     fx = x.shape[-1]
     i = torch.stack([batch, torch.arange(nelems, device=device)])
 
-    print(f"indices {i}")
-
     st = torch.sparse.FloatTensor(
         i,
         x,
@@ -53,9 +51,8 @@ def scatter_mean(x, batch, device=None):
         torch.Size([nbatches, nelems]),
     )
     xsum = torch.sparse.sum(st, dim=1).values()
-    print(xsum.shape)
     nx = torch.sparse.sum(ost, dim=1).values().view([-1, 1])
-    print(nx.shape)
+
     return xsum / nx
 
 
@@ -70,7 +67,6 @@ def scatter_softmax(x, batch, device=None):
     nbatches = batch[-1] + 1
     nelems = len(batch)
     fx = x.shape[-1]
-    print(f"scatter softmax batch {batch}")
 
     i = torch.stack([batch, torch.arange(nelems, device=device)])
 

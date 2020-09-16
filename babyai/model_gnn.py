@@ -109,12 +109,6 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         #     pre_softmax = (keys[:, None, :] * instr_embedding).sum(2) + 1000 * mask
         #     attention = F.softmax(pre_softmax, dim=1)
         #     instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
-        print("------")
-        print(f"obs: {obs}")
-        print(f"memory: {memory}")
-        print(f"obs_batch: {obs_batch}")
-        print(f"m_batch: {m_batch}")
-        print("------")
 
         output, memory = self.slot_memory_model(obs, memory, obs_batch, m_batch)
 

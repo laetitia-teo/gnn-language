@@ -87,6 +87,7 @@ class BaseAlgo(ABC):
                                     device=self.device)
         self.m_batch = torch.IntTensor(
             [i for i in range(self.num_procs) for _ in range(self.memory.shape[0] // self.num_procs)])
+        print('dsfiadsklfnjksaghfjkadslghajdklsfghajds,fgh',self.m_batch)
         self.m_batch = self.m_batch.to(self.device)
         self.mask = torch.ones(shape[1] * self.acmodel.memory_size[0], device=self.device)
         self.masks = torch.zeros(shape[0], shape[1] * self.acmodel.memory_size[0], device=self.device)
@@ -139,10 +140,6 @@ class BaseAlgo(ABC):
             obs_flat = preprocessed_obs.image[0]
             obs_batch = preprocessed_obs.image[1]
 
-            print(f"device: {obs_flat.device}")
-            print(f"memory: {self.memory}")
-            print(f"obs_flat: {obs_flat}")
-            print(f"m_batch: {self.m_batch}")
             # TODO add masks for memory
             with torch.no_grad():
                 model_results = self.acmodel(
@@ -229,18 +226,22 @@ class BaseAlgo(ABC):
 
         # Flatten the data correctly, making sure that
         # each episode's data is a continuous chunk
-
         exps = DictList()
         exps.obs = [self.obss[i][j]
                     for j in range(self.num_procs)
                     for i in range(self.num_frames_per_proc)]
-        # In commments below T is self.num_frames_per_proc, P is self.num_procs,
-        # D is the dimensionality
 
-        # T x P x D -> P x T x D -> (P * T) x D
-        exps.memory = self.memories.transpose(0, 1).reshape(-1, *self.memories.shape[2:])
-        # T x P -> P x T -> (P * T) x 1
-        exps.mask = self.masks.transpose(0, 1).reshape(-1).unsqueeze(1)
+        # In commments below T is self.num_frames_per_proc, P is self.num_procs,
+        # D is the dimensionality and M the number of memory slots
+
+        # T x (P * M) x D -> T x P x M x D -> P x T x M x D -> (P * T * M) x D
+        exps.memory = self.memories.reshape(
+            (self.num_frames_per_proc, self.num_procs, self.acmodel.memory_size[0],
+             self.acmodel.memory_size[1])).transpose(0, 1).reshape(-1, *self.memories.shape[2:])
+
+        # T x (P * M) -> T x P x M -> P x T x M -> (P * T * M) x 1
+        exps.mask = self.masks.reshape(self.num_frames_per_proc, self.num_procs, self.acmodel.memory_size[0]).transpose(
+            0, 1).reshape(-1).unsqueeze(1)
 
         # for all tensors below, T x P -> P x T -> P * T
         exps.action = self.actions.transpose(0, 1).reshape(-1)
