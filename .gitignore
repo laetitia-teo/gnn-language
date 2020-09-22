@@ -2,4 +2,7 @@
 *.pyc
 .idea
 pythoninit.sh
+*.sh
+*.err
+*.out
 ~
