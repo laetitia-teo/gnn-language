@@ -18,7 +18,37 @@ X = np.stack([x, y, z], 0)
 
 ### babyai utils
 
-def get_entities(x, device=None):
+def to_one_hot(x, max_label=[10, 5], device=None):
+    """
+    Provided with a 2-dimensional integer tensor encoding the classes of a set
+    of objects and a max_label tuple of the same length as the last dim of the
+    tensor encoding the maximum number of classes, returns the one hot vector
+    associated.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    ndims = len(x.shape)
+
+    if ndims == 1:
+        x = x.unsqueeze(-1)
+    elif ndims != 2:
+        raise ValueError("The input tensor must have 1 or 2 dimensions, "
+            f"but {ndims} were given")
+
+    l = len(x)
+
+    # add offset to indices further away
+    max_label = torch.tensor([0] + list(max_label), device=device)
+    max_label = max_label.cumsum(0)
+    offsets = max_label[:-1].expand(l, x.shape[1])
+
+    oh_tensor = torch.zeros(l, max_label[-1], device=device)
+    oh_tensor.scatter_(1, x.long() + offsets + 1, 1.) # TODO check for +1
+
+    return oh_tensor
+
+def get_entities(x, device=None, to_one_hot=False):
     """
     Transforms the input array x into a collection of objects.
     Expects a batch of observation arrays (4d) as a numpy array.
@@ -54,6 +84,10 @@ def get_entities(x, device=None):
     x, batch = x.split([lastdim-1, 1], -1)
     # x = x.to(device)
     batch = batch.int()[:, 0]
+
+    if to_one_hot:
+        x_oh = to_one_hot(x[:, :2], device=device).float()
+        x = torch.cat([x_oh, x[:, 2:], -1])
     return x, batch
 
 ### batch index creation utils
