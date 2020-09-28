@@ -155,6 +155,12 @@ class RandomAgent:
                 'dist': None,
                 'value': None}
 
+    def act_batch(self, many_obs):
+        return {'action': torch.tensor([self.act(obs['image'])['action'] for obs in many_obs]), 'dist': None,
+                'value': None}
+    def analyze_feedback(self, reward, done):
+        pass
+
 
 class DemoAgent(Agent):
     """A demonstration-based agent. This agent behaves using demonstrations."""

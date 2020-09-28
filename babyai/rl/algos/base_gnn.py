@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import torch
+import time
 import numpy
 
 from babyai.rl.format import default_preprocess_obss
@@ -87,7 +88,7 @@ class BaseAlgo(ABC):
                                     device=self.device)
         self.m_batch = torch.IntTensor(
             [i for i in range(self.num_procs) for _ in range(self.memory.shape[0] // self.num_procs)])
-        print('dsfiadsklfnjksaghfjkadslghajdklsfghajds,fgh',self.m_batch)
+        print('dsfiadsklfnjksaghfjkadslghajdklsfghajds,fgh', self.m_batch)
         self.m_batch = self.m_batch.to(self.device)
         self.mask = torch.ones(shape[1] * self.acmodel.memory_size[0], device=self.device)
         self.masks = torch.zeros(shape[0], shape[1] * self.acmodel.memory_size[0], device=self.device)
@@ -132,10 +133,15 @@ class BaseAlgo(ABC):
             reward, policy loss, value loss, etc.
 
         """
+
+        t0 = time.time()
+        t_cumulated_process = 0
+        t_cumulated_env_step = 0
         for i in range(self.num_frames_per_proc):
             # Do one agent-environment interaction
-
+            t0_proc = time.time()
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
+            t_cumulated_process += time.time() - t0_proc
 
             obs_flat = preprocessed_obs.image[0]
             obs_batch = preprocessed_obs.image[1]
@@ -154,8 +160,10 @@ class BaseAlgo(ABC):
                 extra_predictions = model_results['extra_predictions']
 
             action = dist.sample()
-
+            t0_step = time.time()
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())
+            t_cumulated_env_step += time.time() - t0_step
+
             if self.aux_info:
                 env_info = self.aux_info_collector.process(env_info)
                 # env_info = self.process_aux_info(env_info)
@@ -204,7 +212,11 @@ class BaseAlgo(ABC):
             self.log_episode_reshaped_return *= episode_mask
             self.log_episode_num_frames *= episode_mask
 
+        t_collect_forward = time.time() - t0
+        t_details_one_pass = model_results['log_time']
+
         # Add advantage and return to experiences
+        t0 = time.time()
         preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
         with torch.no_grad():
             # TODO: Add split obs_flat, obs_batch in preprocess_obss ?
@@ -224,6 +236,7 @@ class BaseAlgo(ABC):
             delta = self.rewards[i] + self.discount * next_value * next_mask - self.values[i]
             self.advantages[i] = delta + self.discount * self.gae_lambda * next_advantage * next_mask
 
+        t_collect_backward = time.time() - t0
         # Flatten the data correctly, making sure that
         # each episode's data is a continuous chunk
         exps = DictList()
@@ -268,6 +281,11 @@ class BaseAlgo(ABC):
             "num_frames_per_episode": self.log_num_frames[-keep:],
             "num_frames": self.num_frames,
             "episodes_done": self.log_done_counter,
+            "t_collect_forward": t_collect_forward,
+            "t_collect_details_one_pass_forward": t_details_one_pass,
+            "t_collect_backward": t_collect_backward,
+            "t_cumulated_process": t_cumulated_process,
+            "t_cumulated_env_step":t_cumulated_env_step
         }
 
         self.log_done_counter = 0

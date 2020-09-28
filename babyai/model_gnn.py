@@ -5,6 +5,7 @@ from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import babyai.rl
+import time
 from babyai.rl.utils.supervised_losses import required_heads
 from gnns.models import SlotMemSparse2
 
@@ -31,6 +32,7 @@ def scatter_sum(x, batch):
         torch.Size([nbatches, nelems] + list(x.shape[1:])),
     )
     return torch.sparse.sum(st, dim=1).values()
+
 
 class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
@@ -110,9 +112,13 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         #     attention = F.softmax(pre_softmax, dim=1)
         #     instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
 
-        output, memory = self.slot_memory_model(obs, memory, obs_batch, m_batch)
+        t0 = time.time()
+        output, memory, log_time_slot_memory_model = self.slot_memory_model(obs, memory, obs_batch, m_batch)
+        t_slot_memory_model = time.time() - t0
 
+        t0 = time.time()
         embedding = scatter_sum(output, m_batch.type(torch.LongTensor))
+        t_scatter_sum = time.time() - t0
 
         # if self.use_instr and not "filmcnn" in self.arch:
         #     embedding = torch.cat((embedding, instr_embedding), dim=1)
@@ -122,14 +128,22 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         else:
             extra_predictions = dict()
 
+        t0 = time.time()
         x = self.actor(embedding)
-
         dist = Categorical(logits=F.log_softmax(x))
+        t_actor = time.time() - t0
 
+        t0 = time.time()
         x = self.critic(embedding)
         value = x
+        t_critic = time.time() - t0
 
-        return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
+        log_time = {'t_slot_memory_model': t_slot_memory_model,
+                    'details_memory_model': log_time_slot_memory_model, 't_scatter_sum': t_scatter_sum,
+                    't_actor': t_actor, 't_critic': t_critic}
+
+        return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions,
+                'log_time': log_time}
 
     def _get_instr_embedding(self, instr):
         lengths = (instr != 0).sum(1).long()

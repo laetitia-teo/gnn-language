@@ -22,6 +22,7 @@ from babyai.arguments import ArgumentParser
 from babyai.model_gnn import ACModelGNN
 from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgentGNN
+from babyai.utils.log import flatten_dict
 
 # Parse arguments
 parser = ArgumentParser()
@@ -45,8 +46,8 @@ parser.add_argument("--save-interval", type=int, default=50,
                     help="number of updates between two saves (default: 50, 0 means no saving)")
 
 args = parser.parse_args()
-# args.env = 'BabyAI-GoToRedBall-v0'
-# args.procs = 4
+args.env = 'BabyAI-GoToRedBall-v0'
+args.procs = 1
 # args.frames_per_proc = 40
 args.memory_dim = (4, 128)
 args.image_dim = 5
@@ -140,17 +141,35 @@ header = (["update", "episodes", "frames", "FPS", "duration"]
           + ["success_rate"]
           + ["num_frames_" + stat for stat in ['mean', 'std', 'min', 'max']]
           + ["entropy", "value", "policy_loss", "value_loss", "loss", "grad_norm"])
+
+header_time = (['t_collect', 't_collect_forward']
+               + ['t_collect_step', 't_collect_process']
+               + ['t_collect_SM']
+               + ["t_collect_SM_" + stat for stat in
+                  ['mhsa', 'edge_compute', 'mhsa_t_mhsa_aw', 'mhsa_t_mhsa_scatter_softmax', 'mhsa_t_mhsa_scatter_sum',
+                   'norm1', 'mlp', 'norm2', 'proj']]
+               + ['t_collect_scatter_sum', 't_collect_actor', 't_collect_critic']
+               + ['t_train_SM']
+               + ["t_train_SM_" + stat for stat in
+                  ['mhsa', 'edge_compute', 'mhsa_t_mhsa_aw', 'mhsa_t_mhsa_scatter_softmax', 'mhsa_t_mhsa_scatter_sum',
+                   'norm1', 'mlp', 'norm2', 'proj']]
+               + ['t_train_scatter_sum', 't_train_actor', 't_train_critic']
+               )
 if args.tb:
     from tensorboardX import SummaryWriter
 
     writer = SummaryWriter(utils.get_log_dir(args.model))
 csv_path = os.path.join(utils.get_log_dir(args.model), 'log.csv')
+csv_path_time = os.path.join(utils.get_log_dir(args.model), 'log_time.csv')
+
 first_created = not os.path.exists(csv_path)
 # we don't buffer data going in the csv log, cause we assume
 # that one update will take much longer that one write to the log
 csv_writer = csv.writer(open(csv_path, 'a', 1))
+csv_writer_time = csv.writer(open(csv_path_time, 'a', 1))
 if first_created:
     csv_writer.writerow(header)
+    csv_writer_time.writerow(header_time)
 
 # Log code state, command, availability of CUDA and model
 
@@ -210,6 +229,15 @@ while status['num_frames'] < args.frames:
                 *num_frames_per_episode.values(),
                 logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"],
                 logs["loss"], logs["grad_norm"]]
+
+        details_one_pass_forward = flatten_dict(logs['t_collect_details_one_pass_forward'])
+        data_time = [logs['t_collect'],
+                     logs['t_collect_forward'],
+                     logs['t_cumulated_env_step'],
+                     logs['t_cumulated_process'],
+                     *details_one_pass_forward.values(),
+
+                     ]
 
         format_str = ("U {} | E {} | F {:06} | FPS {:04.0f} | D {} | R:xsmM {: .2f} {: .2f} {: .2f} {: .2f} | "
                       "S {:.2f} | F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import time
 import babyai
 import gym
 
@@ -204,16 +204,27 @@ class SelfAttentionLayerSparse(torch.nn.Module):
 
         qs, ks, vs = q[src], k[dest], v[dest]
         # dot product
+        t0 = time.time()
         aw = qs.view(-1, H, 1, Fh) @ ks.view(-1, H, Fh, 1)
+        t_mhsa_aw = time.time() - t0
         aw = aw.squeeze()
         # softmax reduction
+
+        t0 = time.time()
         aw = scatter_softmax(aw, src)
+        t_mhsa_scatter_softmax = time.time() - t0
 
         out = aw.view([-1, H, 1]) * vs
+
+        t0 = time.time()
         out = scatter_sum(out, src)
+        t_mhsa_scatter_sum = time.time() - t0
         out = out.reshape([-1, H * Fhv])
 
-        return out
+        log_time = {'t_mhsa_aw': t_mhsa_aw, 't_mhsa_scatter_softmax': t_mhsa_scatter_softmax,
+                    't_mhsa_scatter_sum': t_mhsa_scatter_sum}
+
+        return out, log_time
 
 
 class TransformerBlock(torch.nn.Module):
@@ -770,6 +781,7 @@ class SlotMemSparse(torch.nn.Module):
 
         return output, memory
 
+
 class SlotMemSparse2(torch.nn.Module):
     """
     A GNN where the edge model + edge aggreg is a self-attention layer.
@@ -849,16 +861,32 @@ class SlotMemSparse2(torch.nn.Module):
         # attention computation
         mem_cat = torch.cat([memory, x], 0)
         batch_cat = torch.cat([mbatch, xbatch], 0)
-        ei_cat = gnns.utils.get_ei_from(mbatch, xbatch)
 
+        t0 = time.time()
+        ei_cat = gnns.utils.get_ei_from(mbatch, xbatch)
+        t_edge_compute = time.time() - t0
         # transformer block
-        mem_tmp = self.mhsa(mem_cat, batch_cat, ei_cat)
+
+        t0 = time.time()
+        mem_tmp, log_time_mhsa = self.mhsa(mem_cat, batch_cat, ei_cat)
+        t_mhsa = time.time() - t0
+
+        t0 = time.time()
         mem_tmp = self.norm1(memory + mem_tmp)
+        t_norm1 = time.time() - t0
+
+        t0 = time.time()
         mem_update = self.mlp(mem_tmp)
+        t_mlp = time.time() - t0
+
+        t0 = time.time()
         mem_update = self.norm2(mem_tmp + mem_update)
+        t_norm2 = time.time() - t0
 
         # compute forget and input gates
+        t0 = time.time()
         f, i = self.proj(torch.cat([memory, mem_update], -1)).chunk(2, -1)
+        t_proj = time.time() - t0
 
         # update memory
         # this mechanism may be refined
@@ -867,7 +895,10 @@ class SlotMemSparse2(torch.nn.Module):
         # for now the output is the memory
         output = memory
 
-        return output, memory
+        log_time = {'t_mhsa': t_mhsa, 't_edge_compute': t_edge_compute, 'details_mhsa': log_time_mhsa, 't_norm1': t_norm1, 't_mlp': t_mlp,
+                    't_norm2': t_norm2, 't_proj': t_proj}
+        return output, memory, log_time
+
 
 ### Aggregator modules
 
@@ -879,6 +910,7 @@ class SumAggreg(nn.Module):
     """
     Simple sum of all slots.
     """
+
     def __init__(self):
         super().__init__()
 
@@ -887,6 +919,7 @@ class SumAggreg(nn.Module):
 
     def forward(self, memory, m_batch):
         return scatter_sum(memory, m_batch)
+
 
 class QueryAggreg(nn.Module):
     """
@@ -900,6 +933,7 @@ class QueryAggreg(nn.Module):
         - F: number of features for the self-attention;
         - nheads: number of heads for the self-attention.
     """
+
     def __init__(self, Fmem, nheads):
         super().__init__()
 
@@ -919,6 +953,7 @@ class QueryAggreg(nn.Module):
 
         return queried
 
+
 class LanguageQueryAggreg(nn.Module):
     """
     Initializes an internal vector from a language instruction, with an LSTM,
@@ -931,6 +966,7 @@ class LanguageQueryAggreg(nn.Module):
         - nheads: number of heads for the self-attention;
         - Flang: number of features for language tokens.
     """
+
     def __init__(self, F_hidden, nheads, F_lang):
         super().__init__()
 
@@ -945,7 +981,7 @@ class LanguageQueryAggreg(nn.Module):
 
     def language_init(self, lang_seq):
         S, B, F = lang_seq.shape
-        
+
         h0 = torch.zeros(1, B, self.F_hidden)
         c0 = torch.zeros(1, B, self.F_hidden)
 
@@ -971,6 +1007,7 @@ class LanguageQueryAggreg(nn.Module):
         queried = self.self_attention(x, batch, ei).squeeze()
 
         return queried
+
 
 # TODO: use all tokens in input sentence separately
 
@@ -1074,7 +1111,7 @@ if __name__ == '__main__':
     print()
     print("test transformer layer")
     print(f"Largest discrepancy between results {(res - res2).abs().max()}")
-    
+
     # test dense memory vs sparse version
 
     M = SlotMem(B=2, K=4, Fin=100, Fmem=100, nheads=2)
@@ -1104,7 +1141,7 @@ if __name__ == '__main__':
     # rmc = RMC(4, 10, 2, 2)
     # rmc2 = RMC(4, 10, 2, 2, mode="LSTM", Nx=7)
     # x = torch.rand(2, 7, 20)
-    
+
     ### Test aggreg modules
 
     # this corrsponds to a complete pipeline
@@ -1130,7 +1167,7 @@ if __name__ == '__main__':
     seq = torch.rand(seq_len, b, fx)
     x = torch.rand(b * nslots, fx)
     x_batch = utils.create_batch_tensor(b, nslots)
-    
+
     # query vectors
     q = torch.rand(b, fmem)
     q_batch = torch.arange(b)

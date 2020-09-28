@@ -1,5 +1,6 @@
 import numpy
 import torch
+import time
 
 import torch.nn.functional as F
 
@@ -33,8 +34,10 @@ class PPOAlgoGNN(BaseAlgo):
 
     def update_parameters(self):
         # Collect experiences
-
+        t0 = time.time()
         exps, logs = self.collect_experiences()
+        t_collect = time.time() - t0
+        logs['t_collect'] = t_collect
         '''
         exps is a DictList with the following keys ['obs', 'memory', 'mask', 'action', 'value', 'reward',
          'advantage', 'returnn', 'log_prob'] and ['collected_info', 'extra_predictions'] if we use aux_info
@@ -47,7 +50,7 @@ class PPOAlgoGNN(BaseAlgo):
         being the added information. They are either (n_procs * n_frames_per_proc) 1D tensors or
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         '''
-
+        t0_train = time.time()
         # objs[torch.sum(torch.stack([idx == i for i in indices]), dim=0).nonzero().flatten()]
         n = 0
         for _ in range(self.epochs):
@@ -177,6 +180,9 @@ class PPOAlgoGNN(BaseAlgo):
                 log_grad_norms.append(grad_norm.item())
                 log_losses.append(batch_loss.item())
 
+        t_train = time.time() - t0_train
+        t_train_details_one_pass = model_results['log_time']
+
         # Log some values
 
         logs["entropy"] = numpy.mean(log_entropies)
@@ -185,7 +191,9 @@ class PPOAlgoGNN(BaseAlgo):
         logs["value_loss"] = numpy.mean(log_value_losses)
         logs["grad_norm"] = numpy.mean(log_grad_norms)
         logs["loss"] = numpy.mean(log_losses)
-
+        logs['t_collect'] = t_collect
+        logs['t_train'] = t_train
+        logs['t_train_one_pass'] = t_train_details_one_pass
         return logs
 
     def _get_batches_starting_indexes(self):
