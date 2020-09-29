@@ -7,3 +7,4 @@ pythoninit.sh
 *.err
 *.out
 ~
+script/logs/
