@@ -45,9 +45,9 @@ parser.add_argument("--save-interval", type=int, default=50,
                     help="number of updates between two saves (default: 50, 0 means no saving)")
 
 args = parser.parse_args()
-# args.env = 'BabyAI-GoToRedBall-v0'
-# args.procs = 4
-# args.arch += 'gnn'
+args.env = 'BabyAI-GoToRedBall-v0'
+args.procs = 4
+args.arch += 'gnn'
 
 # Generate environments
 envs = []
