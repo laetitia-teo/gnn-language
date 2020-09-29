@@ -46,8 +46,8 @@ parser.add_argument("--save-interval", type=int, default=50,
 
 args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
-args.procs = 4
-args.arch += 'gnn'
+# args.procs = 4
+# args.arch += 'gnn'
 
 # Generate environments
 envs = []
