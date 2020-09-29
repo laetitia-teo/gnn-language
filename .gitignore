@@ -1,6 +1,7 @@
 *__pycache__
 *.pyc
 .idea
+.idea/*
 pythoninit.sh
 *.sh
 *.err
