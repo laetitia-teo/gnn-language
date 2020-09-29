@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from babyai.rl.algos.base_gnn import BaseAlgo
 from babyai.rl.utils import DictList
+from babyai.utils.log import cumulate_value, timer
 
 
 class PPOAlgoGNN(BaseAlgo):
@@ -34,10 +35,9 @@ class PPOAlgoGNN(BaseAlgo):
 
     def update_parameters(self):
         # Collect experiences
-        t0 = time.time()
-        exps, logs = self.collect_experiences()
-        t_collect = time.time() - t0
+        t_collect, (exps, logs) = timer(self.collect_experiences)()
         logs['t_collect'] = t_collect
+
         '''
         exps is a DictList with the following keys ['obs', 'memory', 'mask', 'action', 'value', 'reward',
          'advantage', 'returnn', 'log_prob'] and ['collected_info', 'extra_predictions'] if we use aux_info
@@ -51,6 +51,8 @@ class PPOAlgoGNN(BaseAlgo):
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         '''
         t0_train = time.time()
+        t_details_train_forward_model = {}
+        t_train_backward = 0
         # objs[torch.sum(torch.stack([idx == i for i in indices]), dim=0).nonzero().flatten()]
         n = 0
         for _ in range(self.epochs):
@@ -71,7 +73,7 @@ class PPOAlgoGNN(BaseAlgo):
             a sub-batch), but the position of each sub-batch in a batch and the position of each batch in the whole
             list of frames is random thanks to self._get_batches_starting_indexes().
             '''
-            # TODO: Remove for loop and do try catch
+
             for inds in self._get_batches_starting_indexes():
                 # inds is a numpy array of indices that correspond to the beginning of a sub-batch
                 # there are as many inds as there are batches
@@ -128,6 +130,9 @@ class PPOAlgoGNN(BaseAlgo):
 
                     entropy = dist.entropy().mean()
 
+                    t_details_train_forward_model = cumulate_value(t_details_train_forward_model,
+                                                                   model_results['log_time'])
+
                     ratio = torch.exp(dist.log_prob(sb.action) - sb.log_prob)
                     surr1 = ratio * sb.advantage
                     surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * sb.advantage
@@ -163,14 +168,14 @@ class PPOAlgoGNN(BaseAlgo):
                 batch_loss /= self.recurrence
 
                 # Update actor-critic
-
+                t0_train_backward = time.time()
                 self.optimizer.zero_grad()
                 batch_loss.backward()
                 grad_norm = sum(
                     p.grad.data.norm(2) ** 2 for p in self.acmodel.parameters() if p.grad is not None) ** 0.5
                 torch.nn.utils.clip_grad_norm_(self.acmodel.parameters(), self.max_grad_norm)
                 self.optimizer.step()
-
+                t_train_backward += time.time() - t0_train_backward
                 # Update log values
 
                 log_entropies.append(batch_entropy)
@@ -181,7 +186,6 @@ class PPOAlgoGNN(BaseAlgo):
                 log_losses.append(batch_loss.item())
 
         t_train = time.time() - t0_train
-        t_train_details_one_pass = model_results['log_time']
 
         # Log some values
 
@@ -193,7 +197,8 @@ class PPOAlgoGNN(BaseAlgo):
         logs["loss"] = numpy.mean(log_losses)
         logs['t_collect'] = t_collect
         logs['t_train'] = t_train
-        logs['t_train_one_pass'] = t_train_details_one_pass
+        logs['t_details_train_forward_mordel'] = t_details_train_forward_model
+        logs['t_backward'] = t_train_backward
         return logs
 
     def _get_batches_starting_indexes(self):

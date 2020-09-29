@@ -6,6 +6,7 @@ import numpy
 from babyai.rl.format import default_preprocess_obss
 from babyai.rl.utils import DictList, ParallelEnv
 from babyai.rl.utils.supervised_losses import ExtraInfoCollector
+from babyai.utils.log import cumulate_value, timer
 
 
 class BaseAlgo(ABC):
@@ -136,18 +137,16 @@ class BaseAlgo(ABC):
         """
 
         t0 = time.time()
-        t_cumulated_process = 0
-        t_cumulated_env_step = 0
+        t_forward_process = 0
+        t_forward_step = 0
+        t_details_forward_model = {}
         for i in range(self.num_frames_per_proc):
             # Do one agent-environment interaction
-            t0_proc = time.time()
-            preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
-            t_cumulated_process += time.time() - t0_proc
-
+            tt_process, preprocessed_obs = timer(self.preprocess_obss)(self.obs, device=self.device)
+            t_forward_process += tt_process
             obs_flat = preprocessed_obs.image[0]
             obs_batch = preprocessed_obs.image[1]
 
-            # TODO add masks for memory
             with torch.no_grad():
                 model_results = self.acmodel(
                     obs_flat,
@@ -160,10 +159,12 @@ class BaseAlgo(ABC):
                 memory = model_results['memory']
                 extra_predictions = model_results['extra_predictions']
 
+            t_details_forward_model = cumulate_value(t_details_forward_model, model_results['log_time'])
+
             action = dist.sample()
-            t0_step = time.time()
-            obs, reward, done, env_info = self.env.step(action.cpu().numpy())
-            t_cumulated_env_step += time.time() - t0_step
+
+            tt_step, (obs, reward, done, env_info) = timer(self.env.step)(action.cpu().numpy())
+            t_forward_step += tt_step
 
             if self.aux_info:
                 env_info = self.aux_info_collector.process(env_info)
@@ -214,7 +215,6 @@ class BaseAlgo(ABC):
             self.log_episode_num_frames *= episode_mask
 
         t_collect_forward = time.time() - t0
-        t_details_one_pass = model_results['log_time']
 
         # Add advantage and return to experiences
         t0 = time.time()
@@ -238,8 +238,10 @@ class BaseAlgo(ABC):
             self.advantages[i] = delta + self.discount * self.gae_lambda * next_advantage * next_mask
 
         t_collect_backward = time.time() - t0
+
         # Flatten the data correctly, making sure that
         # each episode's data is a continuous chunk
+        t0 = time.time()
         exps = DictList()
         exps.obs = [self.obss[i][j]
                     for j in range(self.num_procs)
@@ -265,6 +267,7 @@ class BaseAlgo(ABC):
         exps.returnn = exps.value + exps.advantage
         exps.log_prob = self.log_probs.transpose(0, 1).reshape(-1)
 
+        t_organize_exp = time.time() - t0
         if self.aux_info:
             exps = self.aux_info_collector.end_collection(exps)
 
@@ -283,10 +286,11 @@ class BaseAlgo(ABC):
             "num_frames": self.num_frames,
             "episodes_done": self.log_done_counter,
             "t_collect_forward": t_collect_forward,
-            "t_collect_details_one_pass_forward": t_details_one_pass,
+            "t_details_forward_model": t_details_forward_model,
+            "t_forward_process": t_forward_process,
+            "t_forward_step": t_forward_step,
             "t_collect_backward": t_collect_backward,
-            "t_cumulated_process": t_cumulated_process,
-            "t_cumulated_env_step":t_cumulated_env_step
+            "t_collect_organize": t_organize_exp
         }
 
         self.log_done_counter = 0
