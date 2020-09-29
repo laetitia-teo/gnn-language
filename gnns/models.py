@@ -15,8 +15,9 @@ env = gym.make('BabyAI-GoToRedBall-v0')
 #### sparse reduction ops
 
 def scatter_sum(x, batch, device=None):
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
 
     nbatches = batch[-1] + 1
     nelems = len(batch)
@@ -32,8 +33,9 @@ def scatter_sum(x, batch, device=None):
 
 
 def scatter_mean(x, batch, device=None):
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
 
     nbatches = batch[-1] + 1
     nelems = len(batch)
@@ -61,8 +63,9 @@ def scatter_softmax(x, batch, device=None):
     Computes the softmax-reduction of elements of x as given by the batch index
     tensor.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
 
     nbatches = batch[-1] + 1
     nelems = len(batch)

@@ -103,8 +103,8 @@ acmodel = ACModelGNN(obss_preprocessor.obs_space, envs[0].action_space,
 obss_preprocessor.vocab.save()
 utils.save_model(acmodel, args.model)
 
-if torch.cuda.is_available():
-    acmodel.cuda()
+# if torch.cuda.is_available():
+#     acmodel.cuda()
 
 # Define actor-critic algo
 

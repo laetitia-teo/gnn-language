@@ -25,8 +25,10 @@ def to_one_hot(x, max_label=[10, 5], device=None):
     tensor encoding the maximum number of classes, returns the one hot vector
     associated.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     ndims = len(x.shape)
 
@@ -53,8 +55,10 @@ def get_entities(x, device=None, to_one_hot=False):
     Transforms the input array x into a collection of objects.
     Expects a batch of observation arrays (4d) as a numpy array.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
     # x shape is Nx7x7x3
     N = x.shape[0]
     x = torch.tensor(x, device=device)
@@ -103,8 +107,10 @@ def complete_graph(n, self_edges=False, device=None):
     """
     Returns the complete edge index array given the number of nodes.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     I = torch.arange(n, device=device)
     ei = torch.stack(torch.meshgrid(I, I), 0).reshape((2, -1))
@@ -125,8 +131,10 @@ def complete_crossgraph(n, m, N, bi_directed=True, device=None):
 
     If bi_directed is False, we only return the edges from graph 2 to graph 1.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     In = torch.arange(n, device=device)
     Im = torch.arange(m, device=device)
@@ -148,8 +156,10 @@ def get_ei(batch, self_edges=True, device=None):
     Given a batch index, returns the associated edge index tensor, for a
     fully-connected bi-directional graph with self-edges removed.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     if not isinstance(batch, torch.Tensor):
         batch = torch.tensor(batch)
@@ -175,8 +185,10 @@ def get_crossgraph_ei(batch1,
     """
     Get cross graph ei cross_graph edge index for two provided batchtensors.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
@@ -216,8 +228,10 @@ def get_all_ei(batch1,
 
     TODO: maybe there's a smarter way to compute this.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
@@ -273,8 +287,10 @@ def get_ei_from(batch1,
     Used with a sparse self-attention layer, this means the objects in batch1
     attend to themselves and to tokens in batch2, bit not the other way around.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     if not isinstance(batch1, torch.Tensor):
         batch1 = torch.tensor(batch1)
@@ -315,8 +331,10 @@ def get_graph(x, device=None):
     batch, edges, and edge indices corresponding to the underlying complete
     graph without self-edges.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
 
     x, batch = get_entities(x, device)
     ei = get_ei(batch, device)

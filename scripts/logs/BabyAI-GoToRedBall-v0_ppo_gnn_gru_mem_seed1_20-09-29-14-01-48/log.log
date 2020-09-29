@@ -1,0 +1,1114 @@
+__main__: 2020-09-29 14:01:50,844: LAST COMMIT INFO:
+__main__: 2020-09-29 14:01:50,844: commit de6ea6f4299d10a84cafb4d8e66d7547c3af91a9
+Author: Thomas A. Unger <69393628+thomasaunger@users.noreply.github.com>
+Date:   Fri Sep 4 23:19:35 2020 +0200
+
+    Load model to CPU if CUDA unavailable (#97)
+
+__main__: 2020-09-29 14:01:50,895: GIT DIFF:
+__main__: 2020-09-29 14:01:50,895: diff --git a/babyai/README.md b/babyai/README.md
+deleted file mode 100644
+index 69052b0..0000000
+--- a/babyai/README.md
++++ /dev/null
+@@ -1,19 +0,0 @@
+-# BabyAI
+-
+-There are three folders and eight other files
+-
+-## Folders
+-
+-- `levels` contains the code for all levels
+-- `rl` contains an implementation of the Proximal Policy Optimization (PPO) RL algorithm
+-- `utils` contains files for reading and saving logs, demos and models.  In this folder, `agent.py` defines an abstract class for an agent
+-
+-## Files
+-
+-- `arguments.py` contains the value of default arguments shared by both imitation and reinforcement learning
+-- `bot.py` is a heuristic stack-based bot that can solve all levels
+-- `efficiency.py` contains hyperparmeter configurations we use for imitation learning sample efficiency
+-- `evaluate.py` contains functions used by IL and RL to evaluate an agent
+-- `imitation.py` is our imitation learning implementation
+-- `model.py` contains the neural network code
+-- `plotting.py` is used in plotting.  It also contains Gaussian Process code used in measuring imitation learning sample efficiency
+diff --git a/babyai/arguments.py b/babyai/arguments.py
+index 75055d0..7b950d0 100644
+--- a/babyai/arguments.py
++++ b/babyai/arguments.py
+@@ -60,7 +60,7 @@ class ArgumentParser(argparse.ArgumentParser):
+ 
+         # Model parameters
+         self.add_argument("--image-dim", type=int, default=128,
+-                            help="dimensionality of the image embedding.  Defaults to 128 in residual architectures")
++                            help="dimensionality of the image embedding")
+         self.add_argument("--memory-dim", type=int, default=128,
+                             help="dimensionality of the memory LSTM")
+         self.add_argument("--instr-dim", type=int, default=128,
+@@ -71,7 +71,7 @@ class ArgumentParser(argparse.ArgumentParser):
+                             help="arch to encode instructions, possible values: gru, bigru, conv, bow (default: gru)")
+         self.add_argument("--no-mem", action="store_true", default=False,
+                             help="don't use memory in the model")
+-        self.add_argument("--arch", default='bow_endpool_res',
++        self.add_argument("--arch", default='expert_filmcnn',
+                             help="image embedding architecture")
+ 
+         # Validation parameters
+diff --git a/babyai/efficiency.py b/babyai/efficiency.py
+deleted file mode 100644
+index 0cabd2d..0000000
+--- a/babyai/efficiency.py
++++ /dev/null
+@@ -1,54 +0,0 @@
+-#!/usr/bin/env python3
+-"""
+-Code for launching imitation learning sample efficiency experiments.
+-"""
+-
+-import os
+-import time
+-import subprocess
+-import argparse
+-import math
+-from babyai.cluster_specific import launch_job
+-
+-BIG_MODEL_PARAMS = '--memory-dim=2048 --recurrence=80 --batch-size=128 --instr-arch=attgru --instr-dim=256'
+-SMALL_MODEL_PARAMS = '--batch-size=256'
+-
+-def main(env, seed, training_time, min_demos, max_demos=None,
+-         step_size=math.sqrt(2), pretrained_model=None, level_type='small',
+-         val_episodes=512):
+-    demos = env
+-
+-    if not max_demos:
+-        max_demos = min_demos
+-        min_demos = max_demos - 1
+-
+-    demo_counts = []
+-    demo_count = max_demos
+-    while demo_count >= min_demos:
+-        demo_counts.append(demo_count)
+-        demo_count = math.ceil(demo_count / step_size)
+-
+-    for demo_count in demo_counts:
+-        # Decide on the parameters
+-        epoch_length = 25600 if level_type == 'small' else 51200
+-        epochs = training_time // epoch_length
+-
+-        # Print info
+-        print('{} demos, {} epochs of {} examples'.format(demo_count, epochs, epoch_length))
+-
+-        # Form the command
+-        model_name = '{}_seed{}_{}'.format(demos, seed, demo_count)
+-        if pretrained_model:
+-            model_name += '_{}'.format(pretrained_model)
+-        jobname = '{}_efficiency'.format(demos, min_demos, max_demos)
+-        model_params = BIG_MODEL_PARAMS if level_type == 'big' else SMALL_MODEL_PARAMS
+-        cmd = ('{model_params} --val-episodes {val_episodes}'
+-               ' --seed {seed} --env {env} --demos {demos}'
+-               ' --val-interval 1 --log-interval 1 --epoch-length {epoch_length}'
+-               ' --model {model_name} --episodes {demo_count} --epochs {epochs} --patience {epochs}'
+-          .format(**locals()))
+-        if pretrained_model:
+-            cmd += ' --pretrained-model {}'.format(pretrained_model)
+-        launch_job(cmd, jobname)
+-
+-        seed += 1
+diff --git a/babyai/evaluate.py b/babyai/evaluate.py
+index b5aa39f..b8fbb55 100644
+--- a/babyai/evaluate.py
++++ b/babyai/evaluate.py
+@@ -1,6 +1,5 @@
+ import numpy as np
+ import gym
+-from gym_minigrid.wrappers import RGBImgPartialObsWrapper
+ 
+ 
+ # Returns the performance of the agent on the environment for a particular number of episodes.
+@@ -82,14 +81,12 @@ class ManyEnvs(gym.Env):
+ 
+ 
+ # Returns the performance of the agent on the environment for a particular number of episodes.
+-def batch_evaluate(agent, env_name, seed, episodes, return_obss_actions=False, pixel=False):
++def batch_evaluate(agent, env_name, seed, episodes, return_obss_actions=False):
+     num_envs = min(256, episodes)
+ 
+     envs = []
+     for i in range(num_envs):
+         env = gym.make(env_name)
+-        if pixel:
+-            env = RGBImgPartialObsWrapper(env)
+         envs.append(env)
+     env = ManyEnvs(envs)
+ 
+diff --git a/babyai/imitation.py b/babyai/imitation.py
+index d1f3ef5..0ca8801 100644
+--- a/babyai/imitation.py
++++ b/babyai/imitation.py
+@@ -17,67 +17,12 @@ import logging
+ 
+ logger = logging.getLogger(__name__)
+ 
+-import numpy
+-
+-
+-class EpochIndexSampler:
+-    """
+-    Generate smart indices for epochs that are smaller than the dataset size.
+-
+-    The usecase: you have a code that has a strongly baken in notion of an epoch,
+-    e.g. you can only validate in the end of the epoch. That ties a lot of
+-    aspects of training to the size of the dataset. You may want to validate
+-    more often than once per a complete pass over the dataset.
+-
+-    This class helps you by generating a sequence of smaller epochs that
+-    use different subsets of the dataset, as long as this is possible.
+-    This allows you to keep the small advantage that sampling without replacement
+-    provides, but also enjoy smaller epochs.
+-    """
+-    def __init__(self, n_examples, epoch_n_examples):
+-        self.n_examples = n_examples
+-        self.epoch_n_examples = epoch_n_examples
+-
+-        self._last_seed = None
+-
+-    def _reseed_indices_if_needed(self, seed):
+-        if seed == self._last_seed:
+-            return
+-
+-        rng = numpy.random.RandomState(seed)
+-        self._indices = list(range(self.n_examples))
+-        rng.shuffle(self._indices)
+-        logger.info('reshuffle the dataset')
+-
+-        self._last_seed = seed
+-
+-    def get_epoch_indices(self, epoch):
+-        """Return indices corresponding to a particular epoch.
+-
+-        Tip: if you call this function with consecutive epoch numbers,
+-        you will avoid expensive reshuffling of the index list.
+-
+-        """
+-        seed = epoch * self.epoch_n_examples // self.n_examples
+-        offset = epoch * self.epoch_n_examples % self.n_examples
+-
+-        indices = []
+-        while len(indices) < self.epoch_n_examples:
+-            self._reseed_indices_if_needed(seed)
+-            n_lacking = self.epoch_n_examples - len(indices)
+-            indices += self._indices[offset:offset + min(n_lacking, self.n_examples - offset)]
+-            offset = 0
+-            seed += 1
+-
+-        return indices
+-
+ 
+ class ImitationLearning(object):
+     def __init__(self, args, ):
+         self.args = args
+ 
+         utils.seed(self.args.seed)
+-        self.val_seed = self.args.val_seed
+ 
+         # args.env is a list when training on multiple environments
+         if getattr(args, 'multi_env', None):
+@@ -139,6 +84,7 @@ class ImitationLearning(object):
+         self.acmodel = utils.load_model(args.model, raise_not_found=False)
+         if self.acmodel is None:
+             if getattr(self.args, 'pretrained_model', None):
++                logger.info("Loading pretrained model")
+                 self.acmodel = utils.load_model(args.pretrained_model, raise_not_found=True)
+             else:
+                 logger.info('Creating new model')
+@@ -186,11 +132,14 @@ class ImitationLearning(object):
+         else:
+             return np.arange(0, num_frames, self.args.recurrence)[:-1]
+ 
+-    def run_epoch_recurrence(self, demos, is_training=False, indices=None):
+-        if not indices:
++    def run_epoch_recurrence(self, demos, is_training=False):
++        if self.args.epoch_length == 0:
+             indices = list(range(len(demos)))
+-            if is_training:
+-                np.random.shuffle(indices)
++        else:
++            indices = np.random.choice(len(demos), self.args.epoch_length)
++        if is_training:
++            np.random.shuffle(indices)
++
+         batch_size = min(self.args.batch_size, len(demos))
+         offset = 0
+ 
+@@ -213,9 +162,9 @@ class ImitationLearning(object):
+             log["entropy"].append(_log["entropy"])
+             log["policy_loss"].append(_log["policy_loss"])
+             log["accuracy"].append(_log["accuracy"])
++            log["frames"] = frames
+ 
+             offset += batch_size
+-        log['total_frames'] = frames
+ 
+         if not is_training:
+             self.acmodel.train()
+@@ -321,6 +270,9 @@ class ImitationLearning(object):
+         return log
+ 
+     def validate(self, episodes, verbose=True):
++        # Seed needs to be reset for each validation, to ensure consistency
++        utils.seed(self.args.val_seed)
++
+         if verbose:
+             logger.info("Validating the model")
+         if getattr(self.args, 'multi_env', None):
+@@ -336,8 +288,7 @@ class ImitationLearning(object):
+ 
+         for env_name in ([self.args.env] if not getattr(self.args, 'multi_env', None)
+                          else self.args.multi_env):
+-            logs += [batch_evaluate(agent, env_name, self.val_seed, episodes)]
+-            self.val_seed += episodes
++            logs += [batch_evaluate(agent, env_name, self.args.val_seed, episodes)]
+         agent.model.train()
+ 
+         return logs
+@@ -374,11 +325,6 @@ class ImitationLearning(object):
+         best_success_rate, patience, i = 0, 0, 0
+         total_start_time = time.time()
+ 
+-        epoch_length = self.args.epoch_length
+-        if not epoch_length:
+-            epoch_length = len(train_demos)
+-        index_sampler = EpochIndexSampler(len(train_demos), epoch_length)
+-
+         while status['i'] < getattr(self.args, 'epochs', int(1e9)):
+             if 'patience' not in status:  # if for some reason you're finetuining with IL an RL pretrained agent
+                 status['patience'] = 0
+@@ -388,16 +334,15 @@ class ImitationLearning(object):
+             if status['num_frames'] > self.args.frames:
+                 break
+ 
++            status['i'] += 1
++            i = status['i']
+             update_start_time = time.time()
+ 
+-            indices = index_sampler.get_epoch_indices(status['i'])
+-            log = self.run_epoch_recurrence(train_demos, is_training=True, indices=indices)
+-            
+             # Learning rate scheduler
+             self.scheduler.step()
+ 
+-            status['num_frames'] += log['total_frames']
+-            status['i'] += 1
++            log = self.run_epoch_recurrence(train_demos, is_training=True)
++            status['num_frames'] += log['frames']
+ 
+             update_end_time = time.time()
+ 
+@@ -405,7 +350,7 @@ class ImitationLearning(object):
+             if status['i'] % self.args.log_interval == 0:
+                 total_ellapsed_time = int(time.time() - total_start_time)
+ 
+-                fps = log['total_frames'] / (update_end_time - update_start_time)
++                fps = log['frames'] / (update_end_time - update_start_time)
+                 duration = datetime.timedelta(seconds=total_ellapsed_time)
+ 
+                 for key in log:
+@@ -470,6 +415,9 @@ class ImitationLearning(object):
+                     logger.info(
+                         "Losing patience, new value={}, limit={}".format(status['patience'], self.args.patience))
+ 
++
++            if status['i'] % self.args.save_interval == 0:
++                logger.info("Saving current model")
+                 if torch.cuda.is_available():
+                     self.acmodel.cpu()
+                 utils.save_model(self.acmodel, self.args.model)
+@@ -478,5 +426,3 @@ class ImitationLearning(object):
+                     self.acmodel.cuda()
+                 with open(status_path, 'w') as dst:
+                     json.dump(status, dst)
+-
+-        return best_success_rate
+diff --git a/babyai/model.py b/babyai/model.py
+index b106370..d5902b8 100644
+--- a/babyai/model.py
++++ b/babyai/model.py
+@@ -8,7 +8,7 @@ import babyai.rl
+ from babyai.rl.utils.supervised_losses import required_heads
+ 
+ 
+-# From https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
++# Function from https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
+ def initialize_parameters(m):
+     classname = m.__class__.__name__
+     if classname.find('Linear') != -1:
+@@ -19,16 +19,12 @@ def initialize_parameters(m):
+ 
+ 
+ # Inspired by FiLMedBlock from https://arxiv.org/abs/1709.07871
+-class FiLM(nn.Module):
++class ExpertControllerFiLM(nn.Module):
+     def __init__(self, in_features, out_features, in_channels, imm_channels):
+         super().__init__()
+-        self.conv1 = nn.Conv2d(
+-            in_channels=in_channels, out_channels=imm_channels,
+-            kernel_size=(3, 3), padding=1)
++        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=imm_channels, kernel_size=(3, 3), padding=1)
+         self.bn1 = nn.BatchNorm2d(imm_channels)
+-        self.conv2 = nn.Conv2d(
+-            in_channels=imm_channels, out_channels=out_features,
+-            kernel_size=(3, 3), padding=1)
++        self.conv2 = nn.Conv2d(in_channels=imm_channels, out_channels=out_features, kernel_size=(3, 3), padding=1)
+         self.bn2 = nn.BatchNorm2d(out_features)
+ 
+         self.weight = nn.Linear(in_features, out_features)
+@@ -39,75 +35,58 @@ class FiLM(nn.Module):
+     def forward(self, x, y):
+         x = F.relu(self.bn1(self.conv1(x)))
+         x = self.conv2(x)
+-        weight = self.weight(y).unsqueeze(2).unsqueeze(3)
+-        bias = self.bias(y).unsqueeze(2).unsqueeze(3)
+-        out = x * weight + bias
+-        return F.relu(self.bn2(out))
+-
+-
+-class ImageBOWEmbedding(nn.Module):
+-   def __init__(self, max_value, embedding_dim):
+-       super().__init__()
+-       self.max_value = max_value
+-       self.embedding_dim = embedding_dim
+-       self.embedding = nn.Embedding(3 * max_value, embedding_dim)
+-       self.apply(initialize_parameters)
+-
+-   def forward(self, inputs):
+-       offsets = torch.Tensor([0, self.max_value, 2 * self.max_value]).to(inputs.device)
+-       inputs = (inputs + offsets[None, :, None, None]).long()
+-       return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
++        out = x * self.weight(y).unsqueeze(2).unsqueeze(3) + self.bias(y).unsqueeze(2).unsqueeze(3)
++        out = self.bn2(out)
++        out = F.relu(out)
++        return out
+ 
+ 
+ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
+     def __init__(self, obs_space, action_space,
+                  image_dim=128, memory_dim=128, instr_dim=128,
+-                 use_instr=False, lang_model="gru", use_memory=False,
+-                 arch="bow_endpool_res", aux_info=None):
++                 use_instr=False, lang_model="gru", use_memory=False, arch="cnn1",
++                 aux_info=None):
+         super().__init__()
+ 
+-        endpool = 'endpool' in arch
+-        use_bow = 'bow' in arch
+-        pixel = 'pixel' in arch
+-        self.res = 'res' in arch
+-
+         # Decide which components are enabled
+         self.use_instr = use_instr
+         self.use_memory = use_memory
+         self.arch = arch
+         self.lang_model = lang_model
+         self.aux_info = aux_info
+-        if self.res and image_dim != 128:
+-            raise ValueError(f"image_dim is {image_dim}, expected 128")
+         self.image_dim = image_dim
+         self.memory_dim = memory_dim
+         self.instr_dim = instr_dim
+ 
+         self.obs_space = obs_space
+ 
+-        for part in self.arch.split('_'):
+-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
+-                raise ValueError("Incorrect architecture name: {}".format(self.arch))
+-
+-        # if not self.use_instr:
+-        #     raise ValueError("FiLM architecture can be used when instructions are enabled")
+-        self.image_conv = nn.Sequential(*[
+-            *([ImageBOWEmbedding(obs_space['image'], 128)] if use_bow else []),
+-            *([nn.Conv2d(
+-                in_channels=3, out_channels=128, kernel_size=(8, 8),
+-                stride=8, padding=0)] if pixel else []),
+-            nn.Conv2d(
+-                in_channels=128 if use_bow or pixel else 3, out_channels=128,
+-                kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+-            nn.BatchNorm2d(128),
+-            nn.ReLU(),
+-            *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
+-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+-            nn.BatchNorm2d(128),
+-            nn.ReLU(),
+-            *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
+-        ])
+-        self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
++        if arch == "cnn1":
++            self.image_conv = nn.Sequential(
++                nn.Conv2d(in_channels=3, out_channels=16, kernel_size=(2, 2)),
++                nn.ReLU(),
++                nn.MaxPool2d(kernel_size=(2, 2), stride=2),
++                nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(2, 2)),
++                nn.ReLU(),
++                nn.Conv2d(in_channels=32, out_channels=image_dim, kernel_size=(2, 2)),
++                nn.ReLU()
++            )
++        elif arch.startswith("expert_filmcnn"):
++            if not self.use_instr:
++                raise ValueError("FiLM architecture can be used when instructions are enabled")
++
++            self.image_conv = nn.Sequential(
++                nn.Conv2d(in_channels=3, out_channels=128, kernel_size=(2, 2), padding=1),
++                nn.BatchNorm2d(128),
++                nn.ReLU(),
++                nn.MaxPool2d(kernel_size=(2, 2), stride=2),
++                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
++                nn.BatchNorm2d(128),
++                nn.ReLU(),
++                nn.MaxPool2d(kernel_size=(2, 2), stride=2)
++            )
++            self.film_pool = nn.MaxPool2d(kernel_size=(2, 2), stride=2)
++        else:
++            raise ValueError("Incorrect architecture name: {}".format(arch))
+ 
+         # Define instruction embedding
+         if self.use_instr:
+@@ -131,21 +110,32 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
+             if self.lang_model == 'attgru':
+                 self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
+ 
+-            num_module = 2
++        # Define memory
++        if self.use_memory:
++            self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
++
++        # Resize image embedding
++        self.embedding_size = self.semi_memory_size
++        if self.use_instr and not "filmcnn" in arch:
++            self.embedding_size += self.final_instr_dim
++
++        if arch.startswith("expert_filmcnn"):
++            if arch == "expert_filmcnn":
++                num_module = 2
++            else:
++                num_module = int(arch[(arch.rfind('_') + 1):])
+             self.controllers = []
+             for ni in range(num_module):
+-                mod = FiLM(
+-                    in_features=self.final_instr_dim,
+-                    out_features=128 if ni < num_module-1 else self.image_dim,
+-                    in_channels=128, imm_channels=128)
++                if ni < num_module-1:
++                    mod = ExpertControllerFiLM(
++                        in_features=self.final_instr_dim,
++                        out_features=128, in_channels=128, imm_channels=128)
++                else:
++                    mod = ExpertControllerFiLM(
++                        in_features=self.final_instr_dim, out_features=self.image_dim,
++                        in_channels=128, imm_channels=128)
+                 self.controllers.append(mod)
+-                self.add_module('FiLM_' + str(ni), mod)
+-
+-        # Define memory and resize image embedding
+-        self.embedding_size = self.image_dim
+-        if self.use_memory:
+-            self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
+-            self.embedding_size = self.semi_memory_size
++                self.add_module('FiLM_Controler_' + str(ni), mod)
+ 
+         # Define actor's model
+         self.actor = nn.Sequential(
+@@ -239,16 +229,14 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
+ 
+         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
+ 
+-        if 'pixel' in self.arch:
+-            x /= 256.0
+-        x = self.image_conv(x)
+-        if self.use_instr:
+-            for controller in self.controllers:
+-                out = controller(x, instr_embedding)
+-                if self.res:
+-                    out += x
+-                x = out
+-        x = F.relu(self.film_pool(x))
++        if self.arch.startswith("expert_filmcnn"):
++            x = self.image_conv(x)
++            for controler in self.controllers:
++                x = controler(x, instr_embedding)
++            x = F.relu(self.film_pool(x))
++        else:
++            x = self.image_conv(x)
++
+         x = x.reshape(x.shape[0], -1)
+ 
+         if self.use_memory:
+@@ -259,6 +247,9 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
+         else:
+             embedding = x
+ 
++        if self.use_instr and not "filmcnn" in self.arch:
++            embedding = torch.cat((embedding, instr_embedding), dim=1)
++
+         if hasattr(self, 'aux_info') and self.aux_info:
+             extra_predictions = {info: self.extra_heads[info](embedding) for info in self.extra_heads}
+         else:
+diff --git a/babyai/plotting.py b/babyai/plotting.py
+index 75558e4..dba2ed1 100644
+--- a/babyai/plotting.py
++++ b/babyai/plotting.py
+@@ -24,11 +24,6 @@ import re
+ import numpy as np
+ from matplotlib import pyplot
+ import pandas
+-import scipy
+-from scipy import stats
+-from sklearn.gaussian_process import GaussianProcessRegressor
+-from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+-from scipy.linalg import cholesky, cho_solve, solve_triangular
+ 
+ 
+ def load_log(dir_):
+@@ -42,30 +37,17 @@ def load_log(dir_):
+     df['model'] = dir_
+     return df
+ 
+-def load_multiphase_log(dir_):
+-    df = load_log(dir_)
+-    phases = []
+-    cur_phase = 0
+-    prev_upd = 0
+-    for i in range(len(df)):
+-        upd = df.iloc[i]['update']
+-        if upd < prev_upd:
+-            cur_phase += 1
+-        phases.append(cur_phase)
+-        prev_upd = upd
+-    df['phase'] = phases
+-    return df
+ 
+-def load_logs(root, multiphase=False):
++def load_logs(root):
+     dfs = []
+     for root, dirs, files in os.walk(root, followlinks=True):
+         for file_ in files:
+             if file_ == 'log.csv':
+-                dfs.append(load_multiphase_log(root) if multiphase else load_log(root))
++                dfs.append(load_log(root))
+     return dfs
+ 
+ 
+-def plot_average_impl(df, regexps, y_value='return_mean', window=1, agg='mean',
++def plot_average_impl(df, regexps, y_value='return_mean', window=1, agg='mean', 
+                       x_value='frames'):
+     """Plot averages over groups of runs  defined by regular expressions."""
+     df = df.dropna(subset=[y_value])
+@@ -112,16 +94,15 @@ def plot_all_runs(df, regex, quantity='return_mean', x_axis='frames', window=1,
+ 
+     df = df.dropna(subset=[quantity])
+ 
++    kwargs = {}
++    if color:
++        kwargs['color'] = color
+     unique_models = df['model'].unique()
+     models = [m for m in unique_models if re.match(regex, m)]
+     df_re = df[df['model'].isin(models)]
+     for model, df_model in df_re.groupby('model'):
+         values = df_model[quantity]
+-        values = values.rolling(window, center=True).mean()
+-
+-        kwargs = {}
+-        if color:
+-            kwargs['color'] = color(model)
++        values = values.rolling(window).mean()
+         pyplot.plot(df_model[x_axis],
+                     values,
+                     label=model,
+@@ -129,227 +110,3 @@ def plot_all_runs(df, regex, quantity='return_mean', x_axis='frames', window=1,
+         print(model, df_model[x_axis].max())
+ 
+     pyplot.legend()
+-
+-
+-def model_num_samples(model):
+-    # the number of samples is mangled in the name
+-    return int(re.findall('_([0-9]+)', model)[0])
+-
+-
+-def get_fps(df):
+-    data = df['FPS']
+-    data = data.tolist()
+-    return np.array(data)
+-
+-
+-def best_within_normal_time(df, regex, patience, limit='epochs', window=1, normal_time=None, summary_path=None):
+-    """
+-    Compute the best success rate that is achieved in all runs within the normal time.
+-
+-    The normal time is defined as `patience * T`, where `T` is the time it takes for the run
+-    with the most demonstrations to converge. `window` is the size of the sliding window that is
+-    used for smoothing.
+-
+-    Returns a dataframe with the best success rate for the runs that match `regex`.
+-
+-    """
+-    print()
+-    print(regex)
+-    models = [model for model in df['model'].unique() if re.match(regex, model)]
+-    num_samples = [model_num_samples(model) for model in models]
+-    # sort models according to the number of samples
+-    models, num_samples = zip(*sorted(list(zip(models, num_samples)), key=lambda tupl: tupl[1]))
+-
+-    # choose normal time
+-    max_samples = max(num_samples)
+-    limits = []
+-    for model, num in zip(models, num_samples):
+-        if num == max_samples:
+-            df_model = df[df['model'] == model]
+-            success_rate = df_model['validation_success_rate'].rolling(window, center=True).mean()
+-            if np.isnan(success_rate.max()) or success_rate.max() < 0.99:
+-                raise ValueError('{} has not solved the level yet, only at {} so far'.format(
+-                    model, success_rate.max()))
+-            first_solved = (success_rate > 0.99).to_numpy().nonzero()[0][0]
+-            row = df_model.iloc[first_solved]
+-            print("the model with {} samples first solved after {} epochs ({} seconds, {} frames)".format(
+-                max_samples, row['update'], row['duration'], row['frames']))
+-            limits.append(patience * row[limit] + 1)
+-    if not normal_time:
+-        normal_time = np.mean(limits)
+-        print('using {} as normal time'.format(normal_time))
+-
+-    summary_data = []
+-
+-    # check how many examples is required to succeed within normal time
+-    min_samples_required = None
+-    need_more_time = False
+-    print("{: <100} {}\t{}\t{}\t{}".format(
+-        'model_name', 'sr_nt', 'sr', 'dur_nt', 'dur_days'))
+-    for model, num in zip(models, num_samples):
+-        df_model = df[df['model'] == model]
+-        success_rate = df_model['validation_success_rate'].rolling(window, center=True).mean()
+-        max_within_normal_time = success_rate[df_model[limit] < normal_time].max()
+-        if max_within_normal_time > 0.99:
+-            min_samples_required = min(num, min_samples_required
+-                                       if min_samples_required
+-                                       else int(1e9))
+-        if df_model[limit].max() < normal_time:
+-            need_more_time = True
+-        print("{: <50} {: <5.4g}\t{: <5.4g}\t{: <5.3g}\t{:.3g}".format(
+-            model.split('/')[-1],
+-            max_within_normal_time * 100,
+-            success_rate.max() * 100,
+-            df_model[limit].max() / normal_time,
+-            df_model['duration'].max() / 86400))
+-        summary_data.append((num, max_within_normal_time))
+-
+-    summary_df = pandas.DataFrame(summary_data, columns=('num_samples', 'success_rate'))
+-    if summary_path:
+-        summary_df.to_csv(summary_path)
+-
+-    if min(num_samples) == min_samples_required:
+-        raise ValueError('should be run with less samples!')
+-    if need_more_time:
+-        raise ValueError('should be run for more time!')
+-    return summary_df, normal_time
+-
+-
+-def estimate_sample_efficiency(df, visualize=False, figure_path=None):
+-    """
+-    Estimate sample efficiency and its uncertainty using Gaussian Process.
+-
+-    This function interpolates between data points given in `df` using a Gaussian Process.
+-    It returns a 99% interval based on the GP predictions.
+-
+-    """
+-    f, axes = pyplot.subplots(1, 3, figsize=(15, 5))
+-
+-    # preprocess the data
+-    print("{} datapoints".format(len(df)))
+-    x = np.log2(df['num_samples'].values)
+-    y = df['success_rate']
+-    indices = np.argsort(x)
+-    x = x[indices]
+-    y = y[indices].values
+-
+-    success_threshold = 0.99
+-    min_datapoints = 5
+-    almost_threshold = 0.95
+-
+-    if (y > success_threshold).sum() < min_datapoints:
+-        raise ValueError(f"You have less than {min_datapoints} datapoints above the threshold.\n"
+-                         "Consider running experiments with more examples.")
+-    if ((y > almost_threshold) & (y < success_threshold)).sum() < min_datapoints:
+-        raise ValueError(f"You have less than {min_datapoints} datapoints"
+-              " for which the threshold is almost crossed.\n"
+-              "Consider running experiments with less examples.")
+-    # try to throw away the extra points with low performance
+-    # the model is not suitable for handling those
+-    while True:
+-        if ((y[1:] > success_threshold).sum() >= min_datapoints
+-                and ((y[1:] > almost_threshold) & (y[1:] < success_threshold)).sum()
+-                        >= min_datapoints):
+-            print('throwing away x={}, y={}'.format(x[0], y[0]))
+-            x = x[1:]
+-            y = y[1:]
+-        else:
+-            break
+-
+-    print("min x: {}, max x: {}, min y: {}, max y: {}".format(x.min(), x.max(), y.min(), y.max()))
+-    y = (y - success_threshold) * 100
+-
+-    # fit an RBF GP
+-    kernel = 1.0 * RBF() + WhiteKernel(noise_level_bounds=(1e-10, 10))
+-    gp = GaussianProcessRegressor(kernel=kernel, alpha=0, normalize_y=False).fit(x[:, None], y)
+-    print("Kernel:", gp.kernel_)
+-    print("Marginal likelihood:", gp.log_marginal_likelihood_value_)
+-
+-    # compute the success rate posterior
+-    grid_step = 0.02
+-    grid = np.arange(x[0], x[-1], grid_step)
+-    y_grid_mean, y_grid_cov = gp.predict(grid[:, None], return_cov=True)
+-    noise_level = gp.kernel_.k2.noise_level
+-    f_grid_cov = y_grid_cov - np.diag(np.ones_like(y_grid_cov[0]) * noise_level)
+-
+-    if visualize:
+-        axis = axes[0]
+-        axis.plot(x, y, 'o')
+-        axis.plot(grid, y_grid_mean)
+-        axis.set_xlabel('log2(N)')
+-        axis.set_ylabel('accuracy minus 99%')
+-        axis.set_title('Data Points & Posterior')
+-        axis.fill_between(grid, y_grid_mean - np.sqrt(np.diag(y_grid_cov)),
+-                         y_grid_mean + np.sqrt(np.diag(y_grid_cov)),
+-                         alpha=0.2, color='k')
+-        axis.fill_between(grid, y_grid_mean -np.sqrt(np.diag(f_grid_cov)),
+-                 y_grid_mean + np.sqrt(np.diag(f_grid_cov)),
+-                 alpha=0.2, color='g')
+-        axis.hlines(0, x[0], x[-1])
+-
+-    # compute the N_min posterior
+-    probs = []
+-    total_p = 0.
+-    print("Estimating N_min using a grid of {} points".format(len(grid)))
+-    for j in range(len(grid)):
+-        mu = y_grid_mean[:j + 1].copy()
+-        mu[j] *= -1
+-        sigma = f_grid_cov[:j + 1, :j + 1].copy()
+-        sigma[j, :j] *= -1
+-        sigma[:j, j] *= -1
+-        sigma[np.diag_indices_from(sigma)] += 1e-6
+-        # the probability that the first time the success rate crosses the threshold
+-        # will be between grid[j - 1] and grid[j]
+-        p = stats.multivariate_normal.cdf(np.zeros_like(mu), mu, sigma, abseps=1e-3, releps=1e-3)
+-        probs.append(p)
+-        total_p += p
+-
+-        can_stop = total_p.sum() > 0.999
+-        if j and (can_stop or j % 10 == 0):
+-            print('{} points done'.format(j))
+-            print(" ".join(["{:.3g}".format(p) for p in probs[-10:]]))
+-        if can_stop:
+-            print('the rest is unlikely')
+-            break
+-    probs = np.array(probs)
+-    if (probs.sum() - 1) > 0.01:
+-        raise ValueError("oops, probabilities don't sum to one")
+-    else:
+-        # probs should sum to 1, but there is always a bit of error
+-        probs = probs / probs.sum()
+-
+-    first_prob = (probs > 1e-10).nonzero()[0][0]
+-    subgrid = grid[first_prob:len(probs)]
+-    subprobs = probs[first_prob:]
+-    mean_n_min = (subprobs * subgrid).sum()
+-    mean_n_min_squared = (subprobs * subgrid ** 2).sum()
+-    std_n_min = (mean_n_min_squared - mean_n_min ** 2) ** 0.5
+-    if visualize:
+-        # visualize the N_min posterior density
+-        # visualize the non-Gaussianity of N_min posterior density
+-        axis = axes[2]
+-        axis.plot(subgrid, subprobs)
+-        axis.plot(subgrid, stats.norm.pdf(subgrid, mean_n_min, std_n_min) * grid_step)
+-
+-    # compute the credible interval
+-    cdf = np.cumsum(probs)
+-    left = grid[(cdf > 0.01).nonzero()[0][0]]
+-    right = grid[(cdf > 0.99).nonzero()[0][0]]
+-    print("99% credible interval for N_min:", 2 ** left,  2 ** right)
+-
+-    if visualize:
+-        axis = axes[1]
+-        axis.plot(x, y, 'o')
+-        axis.set_xlabel('log2(N)')
+-        axis.set_ylabel('accuracy minus 99%')
+-        axis.hlines(0, x[0], x[-1])
+-        axis.vlines(left, min(y), max(y), color='r')
+-        axis.vlines(mean_n_min, min(y), max(y), color='k')
+-        axis.vlines(right, min(y), max(y), color='r')
+-        axis.set_title('Data points & Conf. interval for min. number of samples')
+-
+-    pyplot.tight_layout()
+-    if figure_path:
+-        pyplot.savefig(figure_path)
+-    return {'min': 2 ** left, 'max': 2 ** right,
+-            'mean_log2': mean_n_min, 'std_log2': std_n_min}
+diff --git a/babyai/rl/__init__.py b/babyai/rl/__init__.py
+index b018d38..bc6a61f 100644
+--- a/babyai/rl/__init__.py
++++ b/babyai/rl/__init__.py
+@@ -1,3 +1,4 @@
+ from babyai.rl.algos import PPOAlgo
++from babyai.rl.algos import PPOAlgoGNN
+ from babyai.rl.utils import DictList
+ from babyai.rl.model import ACModel, RecurrentACModel
+diff --git a/babyai/rl/algos/__init__.py b/babyai/rl/algos/__init__.py
+index 3b504f9..dd0fb4b 100644
+--- a/babyai/rl/algos/__init__.py
++++ b/babyai/rl/algos/__init__.py
+@@ -1 +1,2 @@
+ from babyai.rl.algos.ppo import PPOAlgo
++from babyai.rl.algos.ppo_gnn import PPOAlgoGNN
+diff --git a/babyai/rl/algos/ppo.py b/babyai/rl/algos/ppo.py
+index 5947719..2fa78cd 100644
+--- a/babyai/rl/algos/ppo.py
++++ b/babyai/rl/algos/ppo.py
+@@ -66,6 +66,7 @@ class PPOAlgo(BaseAlgo):
+             '''
+ 
+             for inds in self._get_batches_starting_indexes():
++
+                 # inds is a numpy array of indices that correspond to the beginning of a sub-batch
+                 # there are as many inds as there are batches
+                 # Initialize batch values
+diff --git a/babyai/utils/__init__.py b/babyai/utils/__init__.py
+index 4ba8692..ecb97de 100644
+--- a/babyai/utils/__init__.py
++++ b/babyai/utils/__init__.py
+@@ -5,7 +5,7 @@ import torch
+ from babyai.utils.agent import load_agent, ModelAgent, DemoAgent, BotAgent
+ from babyai.utils.demos import (
+     load_demos, save_demos, synthesize_demos, get_demos_path)
+-from babyai.utils.format import ObssPreprocessor, IntObssPreprocessor, get_vocab_path
++from babyai.utils.format import ObssPreprocessor, IntObssPreprocessor, GraphObssPreprocessor, get_vocab_path
+ from babyai.utils.log import (
+     get_log_path, get_log_dir, synthesize, configure_logging)
+ from babyai.utils.model import get_model_dir, load_model, save_model
+@@ -18,7 +18,7 @@ def storage_dir():
+ 
+ def create_folders_if_necessary(path):
+     dirname = os.path.dirname(path)
+-    if not(os.path.isdir(dirname)):
++    if not (os.path.isdir(dirname)):
+         os.makedirs(dirname)
+ 
+ 
+diff --git a/babyai/utils/agent.py b/babyai/utils/agent.py
+index 713e4a0..1dfc083 100644
+--- a/babyai/utils/agent.py
++++ b/babyai/utils/agent.py
+@@ -30,6 +30,64 @@ class Agent(ABC):
+         pass
+ 
+ 
++class ModelAgentGNN(Agent):
++    """A model-based agent. This agent behaves using a model."""
++
++    def __init__(self, model_or_name, obss_preprocessor, argmax):
++        if obss_preprocessor is None:
++            assert isinstance(model_or_name, str)
++            obss_preprocessor = utils.ObssPreprocessor(model_or_name)
++        self.obss_preprocessor = obss_preprocessor
++        if isinstance(model_or_name, str):
++            self.model = utils.load_model(model_or_name)
++            if torch.cuda.is_available():
++                self.model.cuda()
++        else:
++            self.model = model_or_name
++        self.device = next(self.model.parameters()).device
++        self.argmax = argmax
++        self.memory = None
++
++    def act_batch(self, many_obs):
++        if self.memory is None:
++            self.memory = torch.zeros(len(many_obs) * self.model.memory_size[0], self.model.memory_size[1],
++                                      device=self.device)
++            self.m_batch = torch.IntTensor(
++                [i for i in range(len(many_obs)) for _ in range(self.model.memory_size[0])])
++        elif self.memory.shape[0] != self.model.memory_size[0] * len(many_obs):
++            raise ValueError("stick to one batch size for the lifetime of an agent")
++
++        preprocessed_obs = self.obss_preprocessor(many_obs, device=self.device)
++        obs_flat = preprocessed_obs.image[0]
++        obs_batch = preprocessed_obs.image[1]
++
++        with torch.no_grad():
++            model_results = self.model(obs_flat, self.memory, obs_batch, self.m_batch)
++            dist = model_results['dist']
++            value = model_results['value']
++            self.memory = model_results['memory']
++
++        if self.argmax:
++            action = dist.probs.argmax(1)
++        else:
++            action = dist.sample()
++
++        return {'action': action,
++                'dist': dist,
++                'value': value}
++
++    def act(self, obs):
++        return self.act_batch([obs])
++
++    def analyze_feedback(self, reward, done):
++        if isinstance(done, tuple):
++            for i in range(len(done)):
++                if done[i]:
++                    self.memory[i, :] *= 0.
++        else:
++            self.memory *= (1 - done)
++
++
+ class ModelAgent(Agent):
+     """A model-based agent. This agent behaves using a model."""
+ 
+@@ -97,6 +155,12 @@ class RandomAgent:
+                 'dist': None,
+                 'value': None}
+ 
++    def act_batch(self, many_obs):
++        return {'action': torch.tensor([self.act(obs['image'])['action'] for obs in many_obs]), 'dist': None,
++                'value': None}
++    def analyze_feedback(self, reward, done):
++        pass
++
+ 
+ class DemoAgent(Agent):
+     """A demonstration-based agent. This agent behaves using demonstrations."""
+@@ -110,11 +174,11 @@ class DemoAgent(Agent):
+ 
+     @staticmethod
+     def check_obss_equality(obs1, obs2):
+-        if not(obs1.keys() == obs2.keys()):
++        if not (obs1.keys() == obs2.keys()):
+             return False
+         for key in obs1.keys():
+             if type(obs1[key]) in (str, int):
+-                if not(obs1[key] == obs2[key]):
++                if not (obs1[key] == obs2[key]):
+                     return False
+             else:
+                 if not (obs1[key] == obs2[key]).all():
+diff --git a/babyai/utils/format.py b/babyai/utils/format.py
+index 50c1ab5..f3d96be 100644
+--- a/babyai/utils/format.py
++++ b/babyai/utils/format.py
+@@ -6,6 +6,7 @@ import torch
+ import babyai.rl
+ 
+ from .. import utils
++import gnns
+ 
+ 
+ def get_vocab_path(model_name):
+@@ -118,6 +119,26 @@ class ObssPreprocessor:
+ 
+         return obs_
+ 
++class GraphObssPreprocessor:
++    def __init__(self, model_name, obs_space=None, load_vocab_from=None):
++        self.image_preproc = RawImagePreprocessor()
++        self.instr_preproc = InstructionsPreprocessor(model_name, load_vocab_from)
++        self.vocab = self.instr_preproc.vocab
++        self.obs_space = {
++            "image": 5,
++            "instr": self.vocab.max_size
++        }
++
++    def __call__(self, obss, device=None):
++        obs_ = babyai.rl.DictList()
++
++        if "image" in self.obs_space.keys():
++            obs_.image = gnns.utils.get_entities(self.image_preproc(obss, device=device), device=device)
++
++        if "instr" in self.obs_space.keys():
++            obs_.instr = self.instr_preproc(obss, device=device)
++
++        return obs_
+ 
+ class IntObssPreprocessor(object):
+     def __init__(self, model_name, obs_space, load_vocab_from=None):
+diff --git a/babyai/utils/log.py b/babyai/utils/log.py
+index 27413b9..d8c41c1 100644
+--- a/babyai/utils/log.py
++++ b/babyai/utils/log.py
+@@ -2,9 +2,19 @@ import os
+ import sys
+ import numpy
+ import logging
++import collections
+ 
+ from .. import utils
+ 
++def flatten_dict(d, parent_key='', sep='_'):
++    items = []
++    for k, v in d.items():
++        new_key = parent_key + sep + k if parent_key else k
++        if isinstance(v, collections.MutableMapping):
++            items.extend(flatten_dict(v, new_key, sep=sep).items())
++        else:
++            items.append((new_key, v))
++    return dict(items)
+ 
+ def get_log_dir(log_name):
+     return os.path.join(utils.storage_dir(), "logs", log_name)
+@@ -36,3 +46,5 @@ def configure_logging(log_name):
+             logging.StreamHandler(sys.stdout)
+         ]
+     )
++
++
+diff --git a/babyai/utils/model.py b/babyai/utils/model.py
+index 2a84261..7b0e160 100644
+--- a/babyai/utils/model.py
++++ b/babyai/utils/model.py
+@@ -15,10 +15,7 @@ def get_model_path(model_name):
+ def load_model(model_name, raise_not_found=True):
+     path = get_model_path(model_name)
+     try:
+-        if torch.cuda.is_available():
+-            model = torch.load(path)
+-        else:
+-            model = torch.load(path, map_location=torch.device("cpu"))
++        model = torch.load(path)
+         model.eval()
+         return model
+     except FileNotFoundError:
+
+__main__: 2020-09-29 14:01:50,895: COMMAND LINE ARGS:
+__main__: 2020-09-29 14:01:50,895: Namespace(algo='ppo', arch='gnn', batch_size=1280, beta1=0.9, beta2=0.999, clip_eps=0.2, discount=0.99, entropy_coef=0.01, env='BabyAI-GoToRedBall-v0', epoch_length=0, epochs=1000000, frames=90000000000, frames_per_proc=40, gae_lambda=0.99, image_dim=5, instr_arch='gru', instr_dim=128, log_interval=10, lr=0.0001, max_grad_norm=0.5, memory_dim=(4, 128), model='BabyAI-GoToRedBall-v0_ppo_gnn_gru_mem_seed1_20-09-29-14-01-48', no_instr=False, no_mem=False, optim_alpha=0.99, optim_eps=1e-05, patience=100, ppo_epochs=4, pretrained_model=None, procs=1, recurrence=20, reward_scale=20.0, save_interval=50, seed=1, task_id_seed=False, tb=False, val_episodes=500, val_interval=1, val_seed=1000000000, value_loss_coef=0.5)
+__main__: 2020-09-29 14:01:50,896: CUDA available: True
+__main__: 2020-09-29 14:01:50,896: ACModelGNN(
+  (slot_memory_model): SlotMemSparse2(
+    (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+    (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+    (mhsa): SelfAttentionLayerSparse(
+      (proj): Linear(in_features=128, out_features=384, bias=False)
+    )
+    (mlp): MLP(
+      (net): Sequential(
+        (0): Linear(in_features=128, out_features=128, bias=True)
+        (1): ReLU()
+        (2): Linear(in_features=128, out_features=128, bias=True)
+      )
+    )
+    (input_proj): Linear(in_features=5, out_features=128, bias=True)
+    (proj): Linear(in_features=256, out_features=256, bias=True)
+  )
+  (actor): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): Tanh()
+    (2): Linear(in_features=64, out_features=7, bias=True)
+  )
+  (critic): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): Tanh()
+    (2): Linear(in_features=64, out_features=1, bias=True)
+  )
+)

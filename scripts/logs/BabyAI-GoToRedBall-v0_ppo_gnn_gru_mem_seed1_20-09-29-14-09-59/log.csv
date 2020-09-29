@@ -1,0 +1,2 @@
+update,episodes,frames,FPS,duration,return_mean,return_std,return_min,return_max,success_rate,num_frames_mean,num_frames_std,num_frames_min,num_frames_max,entropy,value,policy_loss,value_loss,loss,grad_norm
+10,9,400,58.07777066205106,7,0.971875011920929,0.0,0.971875011920929,0.971875011920929,1.0,2.0,0.0,2.0,2.0,1.4919065117836,0.5858335614204406,-0.4106698304414749,18.127068297564982,8.637945175170898,15.715670585632324
