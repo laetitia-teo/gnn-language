@@ -7,4 +7,7 @@ pythoninit.sh
 *.err
 *.out
 ~
-script/logs/
+
+# logs and models
+scripts/logs/
+scripts/models/
