@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import time
+
 import gym
 
 import gnns
 import gnns.utils as utils
+import time
+from babyai.utils.log import timer
 
 env = gym.make('BabyAI-GoToRedBall-v0')
 
@@ -210,16 +212,9 @@ class SelfAttentionLayerSparse(torch.nn.Module):
         t_mhsa_aw = time.time() - t0
         aw = aw.squeeze()
         # softmax reduction
-
-        t0 = time.time()
-        aw = scatter_softmax(aw, src)
-        t_mhsa_scatter_softmax = time.time() - t0
-
+        t_mhsa_scatter_softmax, aw = timer(scatter_softmax)(aw, src)
         out = aw.view([-1, H, 1]) * vs
-
-        t0 = time.time()
-        out = scatter_sum(out, src)
-        t_mhsa_scatter_sum = time.time() - t0
+        t_mhsa_scatter_sum, out = timer(scatter_sum)(out, src)
         out = out.reshape([-1, H * Fhv])
 
         log_time = {'t_mhsa_aw': t_mhsa_aw, 't_mhsa_scatter_softmax': t_mhsa_scatter_softmax,
@@ -892,7 +887,8 @@ class SlotMemSparse2(torch.nn.Module):
         # for now the output is the memory
         output = memory
 
-        log_time = {'t_mhsa': t_mhsa, 't_edge_compute': t_edge_compute, 'details_mhsa': log_time_mhsa, 't_norm1': t_norm1, 't_mlp': t_mlp,
+        log_time = {'t_mhsa': t_mhsa, 't_edge_compute': t_edge_compute, 'details_mhsa': log_time_mhsa,
+                    't_norm1': t_norm1, 't_mlp': t_mlp,
                     't_norm2': t_norm2, 't_proj': t_proj}
         return output, memory, log_time
 

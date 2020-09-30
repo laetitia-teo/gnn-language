@@ -47,7 +47,7 @@ parser.add_argument("--save-interval", type=int, default=50,
 
 args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
-# args.procs = 1
+args.procs = 1
 # args.frames_per_proc = 40
 args.memory_dim = (4, 128)
 args.image_dim = 5

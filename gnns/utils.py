@@ -89,7 +89,7 @@ def get_entities(x, device=None, one_hot=False):
     # x = x.to(device)
     batch = batch.int()[:, 0]
 
-    if to_one_hot:
+    if one_hot:
         x_oh = to_one_hot(x[:, :-2], device=device).float()
         x = torch.cat([x_oh, x[:, -2:]], -1)
     return x, batch
