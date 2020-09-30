@@ -47,7 +47,7 @@ parser.add_argument("--save-interval", type=int, default=50,
 
 args = parser.parse_args()
 args.env = 'BabyAI-GoToRedBall-v0'
-args.procs = 1
+# args.procs = 1
 # args.frames_per_proc = 40
 args.memory_dim = (4, 128)
 args.image_dim = 5
@@ -142,19 +142,37 @@ header = (["update", "episodes", "frames", "FPS", "duration"]
           + ["num_frames_" + stat for stat in ['mean', 'std', 'min', 'max']]
           + ["entropy", "value", "policy_loss", "value_loss", "loss", "grad_norm"])
 
-header_time = (['t_collect', 't_collect_forward']
-               + ['t_collect_step', 't_collect_process']
-               + ['t_collect_SM']
-               + ["t_collect_SM_" + stat for stat in
-                  ['mhsa', 'edge_compute', 'mhsa_t_mhsa_aw', 'mhsa_t_mhsa_scatter_softmax', 'mhsa_t_mhsa_scatter_sum',
-                   'norm1', 'mlp', 'norm2', 'proj']]
-               + ['t_collect_scatter_sum', 't_collect_actor', 't_collect_critic']
-               + ['t_train_SM']
-               + ["t_train_SM_" + stat for stat in
-                  ['mhsa', 'edge_compute', 'mhsa_t_mhsa_aw', 'mhsa_t_mhsa_scatter_softmax', 'mhsa_t_mhsa_scatter_sum',
-                   'norm1', 'mlp', 'norm2', 'proj']]
-               + ['t_train_scatter_sum', 't_train_actor', 't_train_critic']
-               )
+header_time = ['t_collect_forward', 't_details_forward_model_t_slot_memory_model',
+               't_details_forward_model_details_memory_model_t_edge_compute',
+               't_details_forward_model_details_memory_model_details_edge_compute_t_ni1',
+               't_details_forward_model_details_memory_model_details_edge_compute_t_ei1',
+               't_details_forward_model_details_memory_model_details_edge_compute_t_ni2',
+               't_details_forward_model_details_memory_model_details_edge_compute_t_ei12',
+               't_details_forward_model_details_memory_model_t_mhsa',
+               't_details_forward_model_details_memory_model_details_mhsa_t_mhsa_aw',
+               't_details_forward_model_details_memory_model_details_mhsa_t_mhsa_scatter_softmax',
+               't_details_forward_model_details_memory_model_details_mhsa_t_mhsa_scatter_sum',
+               't_details_forward_model_details_memory_model_t_norm1',
+               't_details_forward_model_details_memory_model_t_mlp',
+               't_details_forward_model_details_memory_model_t_norm2', 't_details_forward_model_t_scatter_sum',
+               't_details_forward_model_t_actor', 't_details_forward_model_t_critic', 't_forward_process',
+               't_forward_step', 't_collect_backward', 't_collect_organize', 't_collect', 't_train',
+               't_details_train_forward_mordel_t_slot_memory_model',
+               't_details_train_forward_mordel_details_memory_model_t_edge_compute',
+               't_details_train_forward_mordel_details_memory_model_details_edge_compute_t_ni1',
+               't_details_train_forward_mordel_details_memory_model_details_edge_compute_t_ei1',
+               't_details_train_forward_mordel_details_memory_model_details_edge_compute_t_ni2',
+               't_details_train_forward_mordel_details_memory_model_details_edge_compute_t_ei12',
+               't_details_train_forward_mordel_details_memory_model_t_mhsa',
+               't_details_train_forward_mordel_details_memory_model_details_mhsa_t_mhsa_aw',
+               't_details_train_forward_mordel_details_memory_model_details_mhsa_t_mhsa_scatter_softmax',
+               't_details_train_forward_mordel_details_memory_model_details_mhsa_t_mhsa_scatter_sum',
+               't_details_train_forward_mordel_details_memory_model_t_norm1',
+               't_details_train_forward_mordel_details_memory_model_t_mlp',
+               't_details_train_forward_mordel_details_memory_model_t_norm2',
+               't_details_train_forward_mordel_t_scatter_sum', 't_details_train_forward_mordel_t_actor',
+               't_details_train_forward_mordel_t_critic', 't_backward']
+
 if args.tb:
     from tensorboardX import SummaryWriter
 
@@ -230,15 +248,8 @@ while status['num_frames'] < args.frames:
                 logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"],
                 logs["loss"], logs["grad_norm"]]
 
-        details_one_pass_forward = flatten_dict(logs['t_collect_details_one_pass_forward'])
-        data_time = [logs['t_collect'],
-                     logs['t_collect_forward'],
-                     logs['t_cumulated_env_step'],
-                     logs['t_cumulated_process'],
-                     *details_one_pass_forward.values(),
-
-                     ]
-
+        logs_time = flatten_dict({k: v for k, v in logs.items() if 't_' in k})
+        data_time = list(logs_time.values())
         format_str = ("U {} | E {} | F {:06} | FPS {:04.0f} | D {} | R:xsmM {: .2f} {: .2f} {: .2f} {: .2f} | "
                       "S {:.2f} | F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "
                       "pL {: .3f} | vL {:.3f} | L {:.3f} | gN {:.3f} | ")
@@ -250,7 +261,9 @@ while status['num_frames'] < args.frames:
                 writer.add_scalar(key, float(value), status['num_frames'])
 
         csv_writer.writerow(data)
+        csv_writer_time.writerow(data_time)
 
+        stop =0
     # Save obss preprocessor vocabulary and model
     print(status['i'])
     if args.save_interval > 0 and status['i'] % args.save_interval == 0:

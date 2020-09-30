@@ -854,31 +854,20 @@ class SlotMemSparse2(torch.nn.Module):
         mem_cat = torch.cat([memory, x], 0)
         batch_cat = torch.cat([mbatch, xbatch], 0)
 
-        t0 = time.time()
-        ei_cat = gnns.utils.get_ei_from(mbatch, xbatch)
-        t_edge_compute = time.time() - t0
+        t_edge_compute, (ei_cat, log_time_get_ei_from) = timer(gnns.utils.get_ei_from)(mbatch, xbatch)
+
         # transformer block
 
-        t0 = time.time()
-        mem_tmp, log_time_mhsa = self.mhsa(mem_cat, batch_cat, ei_cat)
-        t_mhsa = time.time() - t0
+        t_mhsa, (mem_tmp, log_time_mhsa) = timer(self.mhsa)(mem_cat, batch_cat, ei_cat)
 
-        t0 = time.time()
-        mem_tmp = self.norm1(memory + mem_tmp)
-        t_norm1 = time.time() - t0
+        t_norm1, mem_tmp = timer(self.norm1)(memory + mem_tmp)
 
-        t0 = time.time()
-        mem_update = self.mlp(mem_tmp)
-        t_mlp = time.time() - t0
+        t_mlp, mem_update = timer(self.mlp)(mem_tmp)
 
-        t0 = time.time()
-        mem_update = self.norm2(mem_tmp + mem_update)
-        t_norm2 = time.time() - t0
+        t_norm2, mem_update = timer(self.norm2)(mem_tmp + mem_update)
 
         # compute forget and input gates
-        t0 = time.time()
         f, i = self.proj(torch.cat([memory, mem_update], -1)).chunk(2, -1)
-        t_proj = time.time() - t0
 
         # update memory
         # this mechanism may be refined
@@ -887,9 +876,8 @@ class SlotMemSparse2(torch.nn.Module):
         # for now the output is the memory
         output = memory
 
-        log_time = {'t_mhsa': t_mhsa, 't_edge_compute': t_edge_compute, 'details_mhsa': log_time_mhsa,
-                    't_norm1': t_norm1, 't_mlp': t_mlp,
-                    't_norm2': t_norm2, 't_proj': t_proj}
+        log_time = {'t_edge_compute': t_edge_compute, 'details_edge_compute': log_time_get_ei_from, 't_mhsa': t_mhsa,
+                    'details_mhsa': log_time_mhsa, 't_norm1': t_norm1, 't_mlp': t_mlp, 't_norm2': t_norm2}
         return output, memory, log_time
 
 
