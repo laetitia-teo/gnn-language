@@ -7,6 +7,7 @@ import babyai
 import gym
 
 from scipy.sparse import coo_matrix, block_diag
+import time
 
 # for testing
 env = gym.make('BabyAI-GoToRedBall-v0')
@@ -17,6 +18,7 @@ y = obs['image']
 obs, _, _, _ = env.step(env.action_space.sample())
 z = obs['image']
 X = np.stack([x, y, z], 0)
+
 
 ### babyai utils
 
@@ -38,7 +40,7 @@ def to_one_hot(x, max_label=[11, 6, 3], device=None):
         x = x.unsqueeze(-1)
     elif ndims != 2:
         raise ValueError("The input tensor must have 1 or 2 dimensions, "
-            f"but {ndims} were given")
+                         f"but {ndims} were given")
 
     l = len(x)
 
@@ -48,9 +50,10 @@ def to_one_hot(x, max_label=[11, 6, 3], device=None):
     offsets = max_label[:-1].expand(l, x.shape[1])
 
     oh_tensor = torch.zeros(l, max_label[-1], device=device)
-    oh_tensor.scatter_(1, x.long() + offsets, 1.) # TODO check for +1
+    oh_tensor.scatter_(1, x.long() + offsets, 1.)  # TODO check for +1
 
     return oh_tensor
+
 
 def get_entities(x, device=None, one_hot=False):
     """
@@ -87,14 +90,15 @@ def get_entities(x, device=None, one_hot=False):
     x = torch.masked_select(x, nzi)
     x = x.reshape(-1, lastdim)
 
-    x, batch = x.split([lastdim-1, 1], -1)
+    x, batch = x.split([lastdim - 1, 1], -1)
     # x = x.to(device)
     batch = batch.int()[:, 0]
 
-    if to_one_hot:
+    if one_hot:
         x_oh = to_one_hot(x[:, :-2], device=device).float()
         x = torch.cat([x_oh, x[:, -2:]], -1)
     return x, batch
+
 
 def get_entities_dense(x, device=None, one_hot=False):
     """
@@ -125,12 +129,14 @@ def get_entities_dense(x, device=None, one_hot=False):
         x = x.reshape(-1, 49, x.shape[-1])
     return x
 
+
 ### batch index creation utils
 
 def create_batch_tensor(B, n):
     # B is number of batches
     # n is number of slots per batch
     return torch.arange(B).unsqueeze(1).expand(B, n).flatten()
+
 
 ### edge index creation utils
 
@@ -149,6 +155,7 @@ def complete_graph(n, self_edges=False, device=None):
     if not self_edges:
         ei = ei[:, ei[0] != ei[1]]
     return ei
+
 
 def complete_crossgraph(n, m, N, bi_directed=True, device=None):
     """
@@ -179,8 +186,10 @@ def complete_crossgraph(n, m, N, bi_directed=True, device=None):
 
     return ei
 
+
 b1 = [0, 0, 0, 1, 1]
 b2 = [0, 0, 1, 1]
+
 
 def get_ei(batch, self_edges=True, device=None):
     """
@@ -208,6 +217,7 @@ def get_ei(batch, self_edges=True, device=None):
     ei = ei.to(device)
 
     return ei
+
 
 def get_crossgraph_ei(batch1,
                       batch2,
@@ -240,13 +250,14 @@ def get_crossgraph_ei(batch1,
 
     # get edge index tensor
     ei = torch.cat(
-        [complete_crossgraph(m, n, N, bi_directed) + cn\
-            for n, m, cn in zip(ni1, ni2, cum2)],
+        [complete_crossgraph(m, n, N, bi_directed) + cn \
+         for n, m, cn in zip(ni1, ni2, cum2)],
         1,
     )
     ei = ei.to(device)
 
     return ei
+
 
 def get_all_ei(batch1,
                batch2,
@@ -290,8 +301,8 @@ def get_all_ei(batch1,
     # get edge index tensor
     ei12 = torch.cat(
         [complete_crossgraph(m, n, N, False) \
-            + torch.tensor([cm, cn]).view(2, 1) \
-            for n, m, cn, cm in zip(ni1, ni2, cum1, cum2)],
+         + torch.tensor([cm, cn]).view(2, 1) \
+         for n, m, cn, cm in zip(ni1, ni2, cum1, cum2)],
         1,
     )
     if bi_directed:
@@ -301,6 +312,7 @@ def get_all_ei(batch1,
     ei = ei.to(device)
 
     return ei
+
 
 def get_ei_from(batch1,
                 batch2,
@@ -333,28 +345,37 @@ def get_ei_from(batch1,
     M = len(batch2)
 
     # get numbers of objects for both batch tensors
+    t0 = time.time()
     coo1 = coo_matrix((np.empty(N), (batch1.cpu().numpy(), np.arange(N))))
     cum1 = coo1.tocsr().indptr
     ni1 = cum1[1:] - cum1[:-1]
+    t_ni1 = time.time() - t0
 
+    t0 = time.time()
     ei1 = torch.cat([complete_graph(n, self_edges) + cn \
                      for n, cn in zip(ni1, cum1)], 1)
+    t_ei1 = time.time() - t0
 
+    t0 = time.time()
     coo2 = coo_matrix((np.empty(M), (batch2.cpu().numpy(), np.arange(M))))
     cum2 = coo2.tocsr().indptr
     ni2 = cum2[1:] - cum2[:-1]
+    t_ni2 = time.time() - t0
 
     # get cross-graph edge index tensor
+    t0 = time.time()
     ei12 = torch.cat(
         [complete_crossgraph(m, n, N, False) \
-            + torch.tensor([cm, cn], device=device).view(2, 1) \
-            for n, m, cn, cm in zip(ni1, ni2, cum1, cum2)],
+         + torch.tensor([cm, cn], device=device).view(2, 1) \
+         for n, m, cn, cm in zip(ni1, ni2, cum1, cum2)],
         1,
     ).flip(0)
-
+    t_ei12 = time.time() - t0
     ei = torch.cat([ei1, ei12], 1).long()
 
-    return ei
+    log_time = {'t_ni1': t_ni1, 't_ei1': t_ei1, 't_ni2': t_ni2, 't_ei12': t_ei12}
+    return ei, log_time
+
 
 def get_ei_from_blockdiag(batch1, batch2, device=None):
     """
@@ -409,7 +430,7 @@ def get_graph(x, device=None):
 
     x, batch = get_entities(x, device)
     ei = get_ei(batch, device)
-    
+
     # edges features are concatenatenations of node features for source
     # and destination nodes
     src, dest = ei
