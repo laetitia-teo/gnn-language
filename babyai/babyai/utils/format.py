@@ -8,6 +8,8 @@ import babyai.rl
 from .. import utils
 import gnns
 
+OBJECT_SIZE = 5
+OBJECT_SIZE_ONE_HOT = 20
 
 def get_vocab_path(model_name):
     return os.path.join(utils.get_model_dir(model_name), "vocab.json")
@@ -125,7 +127,7 @@ class GraphObssPreprocessor:
         self.instr_preproc = InstructionsPreprocessor(model_name, load_vocab_from)
         self.vocab = self.instr_preproc.vocab
         self.obs_space = {
-            "image": 5,
+            "image": OBJECT_SIZE,
             "instr": self.vocab.max_size
         }
 
@@ -134,6 +136,28 @@ class GraphObssPreprocessor:
 
         if "image" in self.obs_space.keys():
             obs_.image = gnns.utils.get_entities(self.image_preproc(obss, device=device), device=device)
+
+        if "instr" in self.obs_space.keys():
+            obs_.instr = self.instr_preproc(obss, device=device)
+
+        return obs_
+
+class GraphObssPreprocessorDense:
+    def __init__(self, model_name, obs_space=None, load_vocab_from=None):
+        self.image_preproc = RawImagePreprocessor()
+        self.instr_preproc = InstructionsPreprocessor(model_name, load_vocab_from)
+        self.vocab = self.instr_preproc.vocab
+        self.obs_space = {
+            "image": OBJECT_SIZE,
+            "instr": self.vocab.max_size
+        }
+
+    def __call__(self, obss, device=None):
+        obs_ = babyai.rl.DictList()
+
+        if "image" in self.obs_space.keys():
+            obs_.image = gnns.utils.get_entities_dense(
+                self.image_preproc(obss, device=device), device=device)
 
         if "instr" in self.obs_space.keys():
             obs_.instr = self.instr_preproc(obss, device=device)

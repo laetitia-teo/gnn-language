@@ -18,7 +18,7 @@ X = np.stack([x, y, z], 0)
 
 ### babyai utils
 
-def to_one_hot(x, max_label=[10, 5], device=None):
+def to_one_hot(x, max_label=[11, 6, 3], device=None):
     """
     Provided with a 2-dimensional integer tensor encoding the classes of a set
     of objects and a max_label tuple of the same length as the last dim of the
@@ -46,11 +46,11 @@ def to_one_hot(x, max_label=[10, 5], device=None):
     offsets = max_label[:-1].expand(l, x.shape[1])
 
     oh_tensor = torch.zeros(l, max_label[-1], device=device)
-    oh_tensor.scatter_(1, x.long() + offsets + 1, 1.) # TODO check for +1
+    oh_tensor.scatter_(1, x.long() + offsets, 1.) # TODO check for +1
 
     return oh_tensor
 
-def get_entities(x, device=None, to_one_hot=False):
+def get_entities(x, device=None, one_hot=False):
     """
     Transforms the input array x into a collection of objects.
     Expects a batch of observation arrays (4d) as a numpy array.
@@ -90,9 +90,38 @@ def get_entities(x, device=None, to_one_hot=False):
     batch = batch.int()[:, 0]
 
     if to_one_hot:
-        x_oh = to_one_hot(x[:, :2], device=device).float()
-        x = torch.cat([x_oh, x[:, 2:], -1])
+        x_oh = to_one_hot(x[:, :-2], device=device).float()
+        x = torch.cat([x_oh, x[:, -2:]], -1)
     return x, batch
+
+def get_entities_dense(x, device=None, one_hot=False):
+    """
+    Preprocess the image as a batch of objects, by flattening the symbolic info
+    and concatenating it with the xy position of each object.
+    Empty space is also represented.
+    """
+    # if device is None:
+    #     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cpu")
+
+    N = x.shape[0]
+    x = torch.tensor(x, device=device)
+    x = x.float()
+
+    # 2d pos
+    a = torch.linspace(-1, 1, 7, device=device)
+    xy = torch.stack(torch.meshgrid(a, a), -1).expand(N, -1, -1, -1)
+
+    x = torch.cat([x, xy], -1)
+    x = x.reshape(-1, 49, x.shape[-1])
+
+    if one_hot:
+        x = x.reshape(-1, x.shape[-1])
+        x_oh = to_one_hot(x[:, :-2], device=device).float()
+        x = torch.cat([x_oh, x[:, -2:]], -1)
+        x = x.reshape(-1, 49, x.shape[-1])
+    return x
 
 ### batch index creation utils
 
@@ -345,3 +374,5 @@ def get_graph(x, device=None):
     e = torch.cat([x[src.type(torch.IntTensor)], x[dest.type(torch.IntTensor)]], 1)
 
     return x, batch, ei, e
+
+None

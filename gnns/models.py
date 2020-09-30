@@ -1,9 +1,7 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
-import babyai
 import gym
 
 import gnns
@@ -621,10 +619,9 @@ class SlotMem(torch.nn.Module):
             individual features.
     """
 
-    def __init__(self, B, K, Fin, Fmem, nheads, gating="feature"):
+    def __init__(self, K, Fin, Fmem, nheads, gating="feature"):
         super().__init__()
 
-        self.B = B
         self.K = K
         self.Fmem = Fmem
         self.nheads = nheads
@@ -646,16 +643,13 @@ class SlotMem(torch.nn.Module):
             raise ValueError("the 'gating' argument must be one of:\n"
                              "\t- 'slot'\n\t- 'feature'")
 
-        # self.register_buffer('C', C)
-        # self.register_buffer('H', H)
-
-    def _mem_init(self):
+    def _mem_init(self, B):
         """
         Some form of initialization where the vectors are unique.
         """
         memory0 = torch.cat([
-            torch.eye(self.K).expand([self.B, self.K, self.K]),
-            torch.zeros([self.B, self.K, self.Fmem - self.K])
+            torch.eye(self.K).expand([B, self.K, self.K]),
+            torch.zeros([B, self.K, self.Fmem - self.K])
         ], -1)
         return memory0
 
@@ -1121,7 +1115,7 @@ if __name__ == '__main__':
     Ms = SlotMemSparse(K=4, Fin=100, Fmem=100, nheads=2)
 
     m0s, m_batch = Ms._mem_init(2)
-    m0 = M._mem_init()
+    m0 = M._mem_init(2)
 
     Ms.input_proj = M.input_proj
     Ms.proj = M.proj

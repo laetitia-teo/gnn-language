@@ -40,8 +40,8 @@ class ModelAgentGNN(Agent):
         self.obss_preprocessor = obss_preprocessor
         if isinstance(model_or_name, str):
             self.model = utils.load_model(model_or_name)
-            if torch.cuda.is_available():
-                self.model.cuda()
+            # if torch.cuda.is_available():
+            #     self.model.cuda()
         else:
             self.model = model_or_name
         self.device = next(self.model.parameters()).device
