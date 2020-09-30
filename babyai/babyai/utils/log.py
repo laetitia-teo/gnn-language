@@ -3,8 +3,18 @@ import sys
 import numpy
 import logging
 import collections
+import time
 
 from .. import utils
+
+def timer(func):
+    def wrapper_timer(*args, **kwargs):
+        start_time = time.perf_counter()
+        value = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        run_time = end_time - start_time
+        return run_time, value
+    return wrapper_timer
 
 def flatten_dict(d, parent_key='', sep='_'):
     items = []
@@ -15,6 +25,14 @@ def flatten_dict(d, parent_key='', sep='_'):
         else:
             items.append((new_key, v))
     return dict(items)
+
+def cumulate_value(buffer_dict, new_dict):
+    for key, value in flatten_dict(new_dict).items():
+        if key not in buffer_dict.keys():
+            buffer_dict[key] = value
+        else:
+            buffer_dict[key] += value
+    return buffer_dict
 
 def get_log_dir(log_name):
     return os.path.join(utils.storage_dir(), "logs", log_name)

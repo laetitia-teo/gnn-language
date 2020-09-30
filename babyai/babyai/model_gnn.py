@@ -8,7 +8,7 @@ import babyai.rl
 import time
 from babyai.rl.utils.supervised_losses import required_heads
 from gnns.models import SlotMemSparse2, SlotMem
-
+from babyai.utils.log import timer
 
 # Function from https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
 def initialize_parameters(m):
@@ -112,13 +112,9 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         #     attention = F.softmax(pre_softmax, dim=1)
         #     instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
 
-        t0 = time.time()
-        output, memory, log_time_slot_memory_model = self.slot_memory_model(obs, memory, obs_batch, m_batch)
-        t_slot_memory_model = time.time() - t0
+        t_slot_memory_model, (output, memory, log_time_slot_memory_model) = timer(self.slot_memory_model)(obs, memory, obs_batch, m_batch)
 
-        t0 = time.time()
-        embedding = scatter_sum(output, m_batch.type(torch.LongTensor))
-        t_scatter_sum = time.time() - t0
+        t_scatter_sum, embedding = timer(scatter_sum)(output, m_batch.type(torch.LongTensor))
 
         # if self.use_instr and not "filmcnn" in self.arch:
         #     embedding = torch.cat((embedding, instr_embedding), dim=1)
@@ -128,15 +124,11 @@ class ACModelGNN(nn.Module, babyai.rl.RecurrentACModel):
         else:
             extra_predictions = dict()
 
-        t0 = time.time()
-        x = self.actor(embedding)
+        t_actor, x = timer(self.actor)(embedding)
         dist = Categorical(logits=F.log_softmax(x))
-        t_actor = time.time() - t0
 
-        t0 = time.time()
-        x = self.critic(embedding)
+        t_critic, x = timer(self.critic)(embedding)
         value = x
-        t_critic = time.time() - t0
 
         log_time = {'t_slot_memory_model': t_slot_memory_model,
                     'details_memory_model': log_time_slot_memory_model, 't_scatter_sum': t_scatter_sum,
