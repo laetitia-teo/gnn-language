@@ -1,10 +1,12 @@
+import time
+
 import torch
 import numpy as np
 
 import babyai
 import gym
 
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, block_diag
 
 # for testing
 env = gym.make('BabyAI-GoToRedBall-v0')
@@ -322,9 +324,9 @@ def get_ei_from(batch1,
     device = torch.device("cpu")
 
     if not isinstance(batch1, torch.Tensor):
-        batch1 = torch.tensor(batch1)
+        batch1 = torch.tensor(batch1, device=device)
     if not isinstance(batch2, torch.Tensor):
-        batch2 = torch.tensor(batch2)
+        batch2 = torch.tensor(batch2, device=device)
     # batch1 = torch.LongTensor([20, 20, 20, 20, 0, 0, 0, 0])
     # batch2 = torch.LongTensor([20, 20, 0, 0, 0])
     N = len(batch1)
@@ -354,6 +356,46 @@ def get_ei_from(batch1,
 
     return ei
 
+def get_ei_from_blockdiag(batch1, batch2, device=None):
+    """
+    Reimplem of get_ei_from using scipy block diagonal matrices.
+    """
+    device = torch.device("cpu")
+
+    if not isinstance(batch1, torch.Tensor):
+        batch1 = torch.tensor(batch1, device=device)
+    if not isinstance(batch2, torch.Tensor):
+        batch2 = torch.tensor(batch2, device=device)
+
+    N = len(batch1)
+    M = len(batch2)
+
+    coo1 = coo_matrix((np.empty(N), (batch1.cpu().numpy(), np.arange(N))))
+    cum1 = coo1.tocsr().indptr
+    ni1 = cum1[1:] - cum1[:-1]
+
+    coo2 = coo_matrix((np.empty(M), (batch2.cpu().numpy(), np.arange(M))))
+    cum2 = coo2.tocsr().indptr
+    ni2 = cum2[1:] - cum2[:-1]    
+
+    # create internal edges
+    mats = [coo_matrix(np.array(i, i)) for i in ni1]
+    S = block_diag(mats)
+    row = torch.tensor(S.row, device=device)
+    col = torch.tensor(S.col, device=device)
+    ei1 = torch.stack([row, col], 0)
+
+    mats = [coo_matrix(np.array(i, j)) for i, j in zip(ni1, ni2)]
+    S = block_diag(mats)
+    row = torch.tensor(S.row, device=device)
+    col = torch.tensor(S.col, device=device)
+    ei12 = torch.stack([row, col], 0)
+
+    ei = torch.cat([ei1, ei12], 1).long()
+
+    return ei
+    
+
 def get_graph(x, device=None):
     """
     Takes in a batch of babyai observations as input and outputs the nodes,
@@ -375,4 +417,13 @@ def get_graph(x, device=None):
 
     return x, batch, ei, e
 
-None
+# def time_blocksparse(n):
+#     print(n)
+#     a = np.ones((1000, 1000))
+#     A = coo_matrix(a)
+
+#     t0 = time.time()
+#     C = block_diag([A] * n)
+#     t = time.time() - t0
+
+#     return t
